@@ -5,7 +5,7 @@ import asyncio
 import json
 
 from app.database import init_db, get_db
-from app.routers import auth, devices, alerts, compliance, threat_intel, ml_models
+from app.routers import auth, devices, alerts, compliance, threat_intel, ml_models, simulation
 from app.ws_manager import ws_manager
 from app.kafka_client import consume_kafka_alerts
 from app.mqtt_client import run_mqtt_bridge
@@ -30,6 +30,7 @@ app.include_router(alerts.router)
 app.include_router(compliance.router)
 app.include_router(threat_intel.router)
 app.include_router(ml_models.router)
+app.include_router(simulation.router)
 
 
 @app.on_event("startup")
@@ -38,7 +39,7 @@ async def on_startup():
     # Create an initial admin user if none exists
     async with app.state.db_session() if hasattr(app.state, 'db_session') else get_db_context() as db:
         from sqlalchemy.future import select
-        from app.models import User, RoleEnum
+        from app.models import User, RoleEnum, Device
         from app.auth import get_password_hash
         
         result = await db.execute(select(User).where(User.username == "admin"))
@@ -50,6 +51,24 @@ async def on_startup():
             )
             db.add(admin_user)
             await db.commit()
+            
+        # Initialize mock hospital wing devices if they don't exist
+        mock_devices = [
+            Device(device_id="rad-mri-01", device_type="MRI_Scanner", status="active", metadata_json={}),
+            Device(device_id="rad-xray-02", device_type="XRay_Machine", status="active", metadata_json={}),
+            Device(device_id="er-infusion-04", device_type="Infusion_Pump", status="active", metadata_json={}),
+            Device(device_id="pharm-dispenser-01", device_type="Automated_Dispenser", status="active", metadata_json={}),
+            Device(device_id="icu-vent-02", device_type="Ventilator", status="active", metadata_json={}),
+            Device(device_id="er-ecg-01", device_type="ECG_Monitor", status="active", metadata_json={}),
+            Device(device_id="pharm-fridge-02", device_type="Smart_Fridge", status="active", metadata_json={}),
+            Device(device_id="rad-ct-01", device_type="CT_Scanner", status="active", metadata_json={})
+        ]
+        
+        for dev in mock_devices:
+            res = await db.execute(select(Device).where(Device.device_id == dev.device_id))
+            if not res.scalars().first():
+                db.add(dev)
+        await db.commit()
     
     # Start background tasks
     asyncio.create_task(consume_kafka_alerts())

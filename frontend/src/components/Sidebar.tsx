@@ -11,6 +11,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeView, setActiveView }) => {
     { id: 'dashboard', label: 'Global Dashboard', icon: Activity },
     { id: 'network', label: 'Network Monitor', icon: Network },
     { id: 'iot_map', label: 'IoT Device Map', icon: Map },
+    { id: 'simulation_hub', label: 'Attack Simulation Hub', icon: ShieldAlert },
     { id: 'threat_intel', label: 'Threat Intel Feed', icon: AlertTriangle },
     { id: 'incident_response', label: 'Incident Response', icon: Shield },
     { id: 'compliance', label: 'Compliance & Audit', icon: FileCheck },

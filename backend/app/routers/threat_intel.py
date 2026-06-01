@@ -13,6 +13,14 @@ async def get_feed(limit: int = 50, db: AsyncSession = Depends(get_db)):
 
 @router.post("/inject")
 async def inject_threat(indicator: str, type: str, confidence: int, source_feed: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ThreatIntel).where(ThreatIntel.indicator == indicator))
+    existing = result.scalars().first()
+    if existing:
+        existing.confidence = confidence
+        existing.source_feed = source_feed
+        await db.commit()
+        return {"status": "success", "id": existing.id}
+
     intel = ThreatIntel(
         indicator=indicator,
         type=type,

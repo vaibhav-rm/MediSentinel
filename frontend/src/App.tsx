@@ -7,6 +7,7 @@ import ThreatIntel from './components/ThreatIntel';
 import IncidentResponse from './components/IncidentResponse';
 import ComplianceCenter from './components/ComplianceCenter';
 import MLManagement from './components/MLManagement';
+import AttackSimulationHub from './components/AttackSimulationHub';
 import Settings from './components/Settings';
 import { useStore } from './useStore';
 
@@ -30,6 +31,8 @@ function App() {
         return <ComplianceCenter />;
       case 'ml_models':
         return <MLManagement />;
+      case 'simulation_hub':
+        return <AttackSimulationHub />;
       case 'settings':
         return <Settings />;
       default:

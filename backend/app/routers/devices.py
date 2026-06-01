@@ -11,12 +11,12 @@ from app.auth import get_current_active_user, require_admin
 router = APIRouter(prefix="/devices", tags=["devices"])
 
 @router.get("/", response_model=List[Device])
-async def read_devices(skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+async def read_devices(skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(DBDevice).offset(skip).limit(limit))
     return result.scalars().all()
 
 @router.get("/{device_id}", response_model=Device)
-async def read_device(device_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+async def read_device(device_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(DBDevice).where(DBDevice.device_id == device_id))
     device = result.scalars().first()
     if device is None:
@@ -49,4 +49,13 @@ async def update_device(device_id: str, device: DeviceUpdate, db: AsyncSession =
         
     await db.commit()
     await db.refresh(db_device)
+
+    if "status" in update_data:
+        try:
+            from app.mqtt_client import publish_mqtt_message
+            publish_mqtt_message(f"medisentinel/iot/control/{device_id}", {"status": db_device.status})
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to publish status change to MQTT: {e}")
+
     return db_device

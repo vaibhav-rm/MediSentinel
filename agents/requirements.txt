@@ -10,3 +10,5 @@ sqlalchemy==2.0.27
 asyncpg==0.29.0
 redis==5.0.1
 cryptography==42.0.5
+paho-mqtt==2.0.0
+

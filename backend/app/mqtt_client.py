@@ -44,15 +44,31 @@ async def auto_register_device(payload: dict):
                 await ws_manager.broadcast(json.dumps(ws_payload))
             else:
                 logger.debug(f"Device already registered: {device_id}")
+                if db_device.status in ["offline", "inactive"]:
+                    db_device.status = "active"
+                    await session.commit()
+                    logger.info(f"Updated registered device {device_id} status from offline to active")
+                    
+                    # Broadcast status change
+                    ws_payload = {
+                        "topic": "devices/telemetry",
+                        "data": {
+                            "device_id": device_id,
+                            "status": "active"
+                        }
+                    }
+                    await ws_manager.broadcast(json.dumps(ws_payload))
     except Exception as e:
-        logger.error(f"Failed to auto-register device directly in DB: {e}")
+        logger.error(f"Failed to auto-register/activate device in DB: {e}")
 
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
         logger.info("Connected to MQTT Broker!")
         # Subscribe to device topics
         client.subscribe("devices/+/data")
         client.subscribe("devices/+/status")
+        client.subscribe("medisentinel/iot/telemetry")
+        client.subscribe("medisentinel/iot/discovery")
     else:
         logger.error(f"Failed to connect to MQTT broker, return code {rc}")
 
@@ -65,7 +81,7 @@ def on_message(client, userdata, msg):
         loop = userdata.get('loop')
         
         # --- Auto Device Registration Logic ---
-        if topic.endswith("/status"):
+        if topic.endswith("/status") or topic == "medisentinel/iot/discovery":
             device_id = payload.get("device_id")
             if device_id and loop and loop.is_running():
                 # Trigger DB registration asynchronously
@@ -81,7 +97,7 @@ def on_message(client, userdata, msg):
                 loop
             )
             # Broadcast live telemetry to connected WebSocket clients for UI Map
-            if topic.endswith("/data"):
+            if topic.endswith("/data") or topic == "medisentinel/iot/telemetry":
                 from app.ws_manager import ws_manager
                 ws_payload = {
                     "topic": "devices/telemetry",
@@ -91,13 +107,24 @@ def on_message(client, userdata, msg):
                     ws_manager.broadcast(json.dumps(ws_payload)),
                     loop
                 )
+                
+                # Auto register if new telemetry device
+                device_id = payload.get("device_id")
+                if device_id:
+                    asyncio.run_coroutine_threadsafe(
+                        auto_register_device({"device_id": device_id, "device_type": "pulse_oximeter", "status": "active"}),
+                        loop
+                    )
             
     except json.JSONDecodeError:
         logger.error(f"Failed to decode MQTT message from topic {msg.topic}")
     except Exception as e:
         logger.error(f"Error handling MQTT message: {e}")
 
+_global_client = None
+
 async def start_mqtt_client():
+    global _global_client
     loop = asyncio.get_running_loop()
     
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, userdata={'loop': loop})
@@ -114,6 +141,7 @@ async def start_mqtt_client():
             await asyncio.sleep(5)
 
     client.loop_start()
+    _global_client = client
     return client
 
 async def run_mqtt_bridge():
@@ -125,3 +153,21 @@ async def run_mqtt_bridge():
     finally:
         client.loop_stop()
         client.disconnect()
+
+def publish_mqtt_message(topic: str, payload: dict):
+    global _global_client
+    try:
+        if _global_client and _global_client.is_connected():
+            logger.info(f"Publishing to MQTT: {topic} -> {payload}")
+            _global_client.publish(topic, json.dumps(payload))
+        else:
+            logger.warning("Global MQTT client not connected; using one-off publish fallback")
+            import paho.mqtt.publish as publish
+            publish.single(
+                topic, 
+                payload=json.dumps(payload), 
+                hostname=settings.mqtt_broker_host, 
+                port=settings.mqtt_broker_port
+            )
+    except Exception as e:
+        logger.error(f"Failed to publish MQTT message: {e}")

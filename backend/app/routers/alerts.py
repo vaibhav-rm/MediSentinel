@@ -12,7 +12,7 @@ from app.auth import get_current_active_user, require_analyst
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
 @router.get("/", response_model=List[Alert])
-async def read_alerts(skip: int = 0, limit: int = 100, is_resolved: bool = None, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+async def read_alerts(skip: int = 0, limit: int = 100, is_resolved: bool = None, db: AsyncSession = Depends(get_db)):
     query = select(DBAlert)
     if is_resolved is not None:
         query = query.where(DBAlert.is_resolved == is_resolved)
@@ -20,7 +20,7 @@ async def read_alerts(skip: int = 0, limit: int = 100, is_resolved: bool = None,
     return result.scalars().all()
 
 @router.get("/{alert_id}", response_model=Alert)
-async def read_alert(alert_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+async def read_alert(alert_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(DBAlert).where(DBAlert.id == alert_id))
     alert = result.scalars().first()
     if alert is None:

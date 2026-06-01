@@ -1,27 +1,85 @@
-import React, { useState } from 'react';
-import { FileCheck, Shield, FileText, Download, Lock } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { FileCheck, Shield, Lock, Download, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { useStore } from '../useStore';
+import type { AuditLogType } from '../types';
 
 const ComplianceCenter: React.FC = () => {
-  const { auditLogs } = useStore();
+  const { agentLogs, attackActive } = useStore();
+  const [auditLogs, setAuditLogs] = useState<AuditLogType[]>([]);
   const [verifying, setVerifying] = useState(false);
   const [verifyStatus, setVerifyStatus] = useState<string | null>(null);
+  const terminalEndRef = useRef<HTMLDivElement | null>(null);
 
-  const handleVerifyChain = () => {
+  // Filter logs for Agent 5
+  const myLogs = agentLogs.filter(log => log.agent_name === 'Compliance Audit');
+
+  // Fetch real-time audit logs from the database
+  const fetchAuditLogs = async () => {
+    try {
+      const res = await fetch('http://localhost:8000/compliance/audit-logs');
+      if (res.ok) {
+        const data = await res.json();
+        setAuditLogs(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch audit logs:", err);
+    }
+  };
+
+  useEffect(() => {
+    fetchAuditLogs();
+    const interval = setInterval(fetchAuditLogs, 2500); // refresh logs list
+    return () => clearInterval(interval);
+  }, []);
+
+  // Auto scroll terminal logs
+  useEffect(() => {
+    if (terminalEndRef.current) {
+      terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [myLogs]);
+
+  const handleVerifyChain = async () => {
     setVerifying(true);
-    // Simulate verification delay
-    setTimeout(() => {
+    try {
+      const res = await fetch('http://localhost:8000/compliance/verify-chain');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === 'valid') {
+          setVerifyStatus('Valid');
+        } else {
+          setVerifyStatus('Invalid');
+        }
+      }
+    } catch (e) {
+      setVerifyStatus('Verification Failed');
+    } finally {
       setVerifying(false);
-      setVerifyStatus('Valid');
-    }, 1500);
+    }
   };
 
   return (
     <div className="main-content">
-      <h1 className="page-title" style={{ marginBottom: '24px', display: 'flex', alignItems: 'center', gap: '12px' }}>
-        <FileCheck color="var(--color-primary)" />
-        Compliance and Audit Center
-      </h1>
+      <div className="header" style={{ marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <FileCheck color="var(--color-primary)" />
+            Compliance & Audit Center
+          </h1>
+          <p style={{ color: 'var(--text-muted)' }}>Cryptographically secured compliance logging & HIPAA validation.</p>
+        </div>
+        <div>
+          {attackActive ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,204,0,0.15)', border: '1px solid var(--color-warning)', color: 'var(--color-warning)', padding: '8px 16px', borderRadius: '6px', fontWeight: 'bold' }}>
+              <AlertTriangle size={18} /> COMPLIANCE EXCEPTION REPORTED
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(0,255,136,0.1)', border: '1px solid var(--color-success)', color: 'var(--color-success)', padding: '8px 16px', borderRadius: '6px', fontWeight: 'bold' }}>
+              <ShieldCheck size={18} /> SYSTEM STATUS: COMPLIANT
+            </div>
+          )}
+        </div>
+      </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '24px', marginBottom: '24px' }}>
         
@@ -33,18 +91,18 @@ const ComplianceCenter: React.FC = () => {
             </h2>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               {[
-                { label: 'Access Control', score: 95 },
+                { label: 'Access Control', score: attackActive ? 90 : 95 },
                 { label: 'Audit Controls', score: 100 },
                 { label: 'Integrity', score: 100 },
-                { label: 'Transmission Security', score: 92 }
+                { label: 'Transmission Security', score: attackActive ? 85 : 92 }
               ].map(cat => (
                 <div key={cat.label}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px', fontSize: '0.9rem' }}>
                     <span>{cat.label}</span>
-                    <span style={{ color: cat.score >= 95 ? 'var(--color-success)' : 'var(--color-warning)' }}>{cat.score}%</span>
+                    <span style={{ color: cat.score >= 90 ? 'var(--color-success)' : 'var(--color-warning)' }}>{cat.score}%</span>
                   </div>
                   <div style={{ width: '100%', height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px' }}>
-                    <div style={{ width: `${cat.score}%`, height: '100%', background: cat.score >= 95 ? 'var(--color-success)' : 'var(--color-warning)', borderRadius: '3px' }}></div>
+                    <div style={{ width: `${cat.score}%`, height: '100%', background: cat.score >= 90 ? 'var(--color-success)' : 'var(--color-warning)', borderRadius: '3px' }}></div>
                   </div>
                 </div>
               ))}
@@ -68,23 +126,32 @@ const ComplianceCenter: React.FC = () => {
         </div>
 
         {/* Tamper-Evident Logs */}
-        <div className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column' }}>
+        <div className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', height: '495px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
             <h2 style={{ fontSize: '1.2rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Lock size={20} color="var(--color-accent)" /> Tamper-Evident Log Viewer
+              <Lock size={20} color="var(--color-accent)" /> Cryptographic Ledger Logs
             </h2>
             <button 
               onClick={handleVerifyChain}
               disabled={verifying}
               style={{ padding: '6px 12px', background: 'rgba(0,243,255,0.1)', border: '1px solid rgba(0,243,255,0.3)', color: 'var(--color-primary)', borderRadius: '4px', cursor: 'pointer' }}
             >
-              {verifying ? 'Verifying Hashes...' : 'Verify Hash Chain'}
+              {verifying ? 'Verifying...' : 'Verify Hash Chain'}
             </button>
           </div>
 
           {verifyStatus && (
-            <div style={{ marginBottom: '16px', padding: '12px', background: 'rgba(0,255,136,0.1)', border: '1px solid var(--color-success)', color: 'var(--color-success)', borderRadius: '4px' }}>
-              Cryptographic hash chain verification successful. 0 instances of tampering detected.
+            <div style={{ 
+              marginBottom: '16px', 
+              padding: '12px', 
+              background: verifyStatus === 'Valid' ? 'rgba(0,255,136,0.1)' : 'rgba(255,0,85,0.1)', 
+              border: `1px solid ${verifyStatus === 'Valid' ? 'var(--color-success)' : 'var(--color-danger)'}`, 
+              color: verifyStatus === 'Valid' ? 'var(--color-success)' : 'var(--color-danger)', 
+              borderRadius: '4px' 
+            }}>
+              {verifyStatus === 'Valid' 
+                ? 'Cryptographic hash chain verification successful. 0 instances of tampering detected.'
+                : 'Warning! Hash verification failed or database contains empty signature trace.'}
             </div>
           )}
 
@@ -94,7 +161,7 @@ const ComplianceCenter: React.FC = () => {
             ) : auditLogs.map((log, i) => (
               <div key={i} style={{ marginBottom: '12px', paddingBottom: '12px', borderBottom: '1px dashed rgba(255,255,255,0.1)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-primary)' }}>
-                  <span>[{new Date(log.timestamp).toISOString()}] {log.actor} -> {log.action}</span>
+                  <span>[{new Date(log.timestamp).toISOString()}] {log.actor} -&gt; {log.action}</span>
                   <span style={{ color: 'var(--color-success)' }}>VERIFIED</span>
                 </div>
                 <div style={{ color: 'var(--text-muted)', marginTop: '4px' }}>Target: {log.target}</div>
@@ -104,7 +171,34 @@ const ComplianceCenter: React.FC = () => {
             ))}
           </div>
         </div>
+      </div>
 
+      {/* Compliance Log Stream */}
+      <div className="glass-panel" style={{ padding: '24px' }}>
+        <h2 style={{ fontSize: '1.2rem', marginBottom: '16px', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <FileCheck size={18} color="var(--color-success)" /> Agent 5: Compliance Audit Agent Log Stream
+        </h2>
+        <div style={{ 
+          background: 'rgba(0,0,0,0.6)', 
+          fontFamily: 'monospace', 
+          fontSize: '0.85rem', 
+          padding: '16px', 
+          borderRadius: '8px', 
+          border: '1px solid rgba(255,255,255,0.05)', 
+          height: '180px', 
+          overflowY: 'auto' 
+        }}>
+          {myLogs.length === 0 ? (
+            <div style={{ color: 'var(--text-muted)' }}>&gt;_ Awaiting compliance mapping signatures...</div>
+          ) : (
+            myLogs.map((log, i) => (
+              <div key={i} style={{ marginBottom: '6px', color: log.status === 'logged' ? 'var(--color-warning)' : 'var(--color-success)' }}>
+                [{new Date(log.timestamp).toLocaleTimeString()}] {log.message}
+              </div>
+            ))
+          )}
+          <div ref={terminalEndRef} />
+        </div>
       </div>
     </div>
   );
