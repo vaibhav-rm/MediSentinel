@@ -1,5 +1,5 @@
 import React from 'react';
-import { Shield, Activity, HardDrive, AlertTriangle, ShieldAlert, Cpu, Settings, Network, Map, FileCheck, BrainCircuit } from 'lucide-react';
+import { Shield, Activity, HardDrive, AlertTriangle, ShieldAlert, Cpu, Network, Map, FileCheck, BrainCircuit } from 'lucide-react';
 
 interface SidebarProps {
   activeView: string;
@@ -16,7 +16,6 @@ const Sidebar: React.FC<SidebarProps> = ({ activeView, setActiveView }) => {
     { id: 'incident_response', label: 'Incident Response', icon: Shield },
     { id: 'compliance', label: 'Compliance & Audit', icon: FileCheck },
     { id: 'ml_models', label: 'ML Models', icon: BrainCircuit },
-    { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
   return (
