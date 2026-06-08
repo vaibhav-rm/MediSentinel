@@ -469,7 +469,13 @@ export const useStore = () => {
     const interval = setInterval(() => {
       timer += 1;
       const isAttacking = attackActive;
-      const progress = (timer * 20) % 120;
+      const progress = timer * 20;
+
+      if (isAttacking && progress >= 120) {
+        toggleAttack(false);
+        timer = 0;
+        return;
+      }
 
       // Reset logs if not attacking and timer resets
       if (!isAttacking) {
@@ -739,8 +745,9 @@ export const useStore = () => {
 
       // 6. Cryptographic HIPAA Compliance (Agent 5)
       setComplianceMetrics(prev => {
-        if (isAttacking && progress > 60 && prev.auditBlocks.length === 2) {
-          const blocks = [...prev.auditBlocks];
+        const blocks = [...prev.auditBlocks];
+        
+        if (isAttacking && attackType === 'agent5_tamper' && progress > 60 && prev.auditBlocks.length === 2) {
           const newBlockId = 1042;
           const prevHashVal = blocks[blocks.length - 1]?.hash || 'ef72183cfab32087c53d10042f9fa21e901';
           const payloadString = `MITIGATION_LOG-${attackType}-${newBlockId}`;
@@ -757,6 +764,32 @@ export const useStore = () => {
 
           return { ...prev, auditBlocks: blocks };
         }
+
+        // Real-time block generation
+        if (!prev.tamperAttemptActive && (!isAttacking || attackType !== 'agent5_tamper')) {
+          const lastBlock = blocks[blocks.length - 1];
+          const newBlockId = (lastBlock?.id || 1041) + 1;
+          const prevHashVal = lastBlock?.hash || 'ef72183cfab32087c53d10042f9fa21e901';
+          
+          const payloadString = `ROUTINE_AUDIT-${newBlockId}-${Date.now()}`;
+          const currentHashVal = generateHash(prevHashVal, payloadString);
+
+          blocks.push({
+            id: newBlockId,
+            hash: currentHashVal,
+            prevHash: prevHashVal,
+            hipaa: 'HIPAA §164.312(b) AUDIT CONTROLS',
+            timestamp: new Date().toISOString(),
+            status: 'VERIFIED & LOCKED'
+          });
+
+          if (blocks.length > 25) {
+             blocks.shift();
+          }
+
+          return { ...prev, auditBlocks: blocks };
+        }
+
         return prev;
       });
 
@@ -808,27 +841,20 @@ export const useStore = () => {
           if (progress === 20) {
             setAgent1Logs(prev => [
               ...prev,
-              { agent: 'Network Monitor', msg: '[ALERT] [IDENTIFICATION] LSTM flags abnormal packet frequency spike on eth0! (2,400 pkts/s exceeds threshold 200)', time: timestamp, status: 'attack' }
+              { agent: 'Network Monitor', msg: '[ALERT] [IDENTIFICATION] High amount of packets detected (DDoS signature). Identifying malicious packets.', time: timestamp, status: 'attack' }
             ].slice(-50));
           }
           else if (progress === 40) {
             setAgent1Logs(prev => [
               ...prev,
-              { agent: 'Network Monitor', msg: '[ACTION] [STOPPING] Enforcing eBPF filter rule drop. Dropping TCP SYN packets from attack source.', time: timestamp, status: 'warning' }
+              { agent: 'Network Monitor', msg: '[ACTION] [STOPPING] Isolating malicious packets. Dropping unneeded traffic and only transmitting necessary packets to secure the system.', time: timestamp, status: 'warning' }
             ].slice(-50));
           }
           else if (progress === 60) {
             setAgent1Logs(prev => [
               ...prev,
-              { agent: 'Network Monitor', msg: '[POLICY] [PREVENTION] Applied automated rate-limiting policy to port 80/443 on IoT gateway subnet.', time: timestamp, status: 'warning' },
+              { agent: 'Network Monitor', msg: '[POLICY] [PREVENTION] System secured. Rate-limiting and intelligent packet filtering active.', time: timestamp, status: 'warning' },
               { agent: 'Network Monitor', msg: '[INFO] [SOLUTION] Permanent Solution: Configure ingress QoS queue shaping, enable syncookies on host kernel, and deploy edge DDoS scrubbers.', time: timestamp, status: 'info' }
-            ].slice(-50));
-
-            // Log block creation in Agent 5
-            setAgent5Logs(prev => [
-              ...prev,
-              { agent: 'Compliance Audit', msg: '[ALERT] [IDENTIFICATION] Detected mitigation completion. Creating block #1042 verification signature.', time: timestamp, status: 'warning' },
-              { agent: 'Compliance Audit', msg: '[SUCCESS] HIPAA transaction logged successfully to hash ledger. Block hash: 39af20f782ba.', time: timestamp, status: 'success' }
             ].slice(-50));
           }
           else if (progress === 80) {
@@ -850,26 +876,20 @@ export const useStore = () => {
           if (progress === 20) {
             setAgent2Logs(prev => [
               ...prev,
-              { agent: 'IoT Guardian', msg: '[ALERT] [IDENTIFICATION] Clinical bounds check failed! Heart rate (220 BPM) and SpO2 (81%) reconstructed with high error loss (0.942).', time: timestamp, status: 'attack' }
+              { agent: 'IoT Guardian', msg: '[ALERT] [IDENTIFICATION] Spoofed telemetry payloads detected. Identifying anomalous metrics.', time: timestamp, status: 'attack' }
             ].slice(-50));
           }
           else if (progress === 40) {
             setAgent2Logs(prev => [
               ...prev,
-              { agent: 'IoT Guardian', msg: '[ACTION] [STOPPING] Intercepting data telemetry stream. Reverting local device state updates.', time: timestamp, status: 'warning' }
+              { agent: 'IoT Guardian', msg: '[ACTION] [STOPPING] Preventing spoofed data transmission. Isolating device and rejecting mutated telemetry to secure the system.', time: timestamp, status: 'warning' }
             ].slice(-50));
           }
           else if (progress === 60) {
             setAgent2Logs(prev => [
               ...prev,
-              { agent: 'IoT Guardian', msg: '[POLICY] [PREVENTION] Enforced dynamic baseline mutation rejection. Telemetry from device quarantined.', time: timestamp, status: 'warning' },
+              { agent: 'IoT Guardian', msg: '[POLICY] [PREVENTION] System secured. Restoring legitimate telemetry stream.', time: timestamp, status: 'warning' },
               { agent: 'IoT Guardian', msg: '[INFO] [SOLUTION] Permanent Solution: Implement cryptographically signed telemetry frames from device firmware (HMAC-SHA256) and enroll devices in mutual TLS (mTLS).', time: timestamp, status: 'info' }
-            ].slice(-50));
-
-            setAgent5Logs(prev => [
-              ...prev,
-              { agent: 'Compliance Audit', msg: '[ALERT] [IDENTIFICATION] Device telemetry exception registered. Generating blockchain report.', time: timestamp, status: 'warning' },
-              { agent: 'Compliance Audit', msg: '[SUCCESS] Registered Block #1042. Clinical Data Integrity check passed (§164.312(c)).', time: timestamp, status: 'success' }
             ].slice(-50));
           }
           else if (progress === 80) {
@@ -891,26 +911,20 @@ export const useStore = () => {
           if (progress === 20) {
             setAgent3Logs(prev => [
               ...prev,
-              { agent: 'Threat Intelligence', msg: '[ALERT] [IDENTIFICATION] STIX NLP matcher flags connection target IP 45.33.32.156. Matches APT41 Command & Control feed.', time: timestamp, status: 'attack' }
+              { agent: 'Threat Intelligence', msg: '[ALERT] [IDENTIFICATION] C2 Beaconing detected. Identifying malicious IPs.', time: timestamp, status: 'attack' }
             ].slice(-50));
           }
           else if (progress === 40) {
             setAgent3Logs(prev => [
               ...prev,
-              { agent: 'Threat Intelligence', msg: '[ACTION] [STOPPING] Severed socket connection to remote C2. DNS cache query invalidated.', time: timestamp, status: 'warning' }
+              { agent: 'Threat Intelligence', msg: '[ACTION] [STOPPING] Isolating malicious communication. Dropping C2 packets and restricting to whitelisted domains to secure the system.', time: timestamp, status: 'warning' }
             ].slice(-50));
           }
           else if (progress === 60) {
             setAgent3Logs(prev => [
               ...prev,
-              { agent: 'Threat Intelligence', msg: '[POLICY] [PREVENTION] Injected firewall IP drop rule. Blocked all ingress/egress to remote subnet 45.33.32.0/24.', time: timestamp, status: 'warning' },
+              { agent: 'Threat Intelligence', msg: '[POLICY] [PREVENTION] System secured. Egress traffic filtered.', time: timestamp, status: 'warning' },
               { agent: 'Threat Intelligence', msg: '[INFO] [SOLUTION] Permanent Solution: Configure DNS firewalls (RPZ), restrict outbound access to whitelisted medical proxy domains, and enforce zero-trust egress routing.', time: timestamp, status: 'info' }
-            ].slice(-50));
-
-            setAgent5Logs(prev => [
-              ...prev,
-              { agent: 'Compliance Audit', msg: '[ALERT] [IDENTIFICATION] External C2 signature matched. Sealing transmission logs.', time: timestamp, status: 'warning' },
-              { agent: 'Compliance Audit', msg: '[SUCCESS] Block #1042 verified and sealed. HIPAA Access Control check passed (§164.312(a)).', time: timestamp, status: 'success' }
             ].slice(-50));
           }
           else if (progress === 80) {
@@ -932,26 +946,20 @@ export const useStore = () => {
           if (progress === 20) {
             setAgent4Logs(prev => [
               ...prev,
-              { agent: 'Incident Response', msg: '[ALERT] [IDENTIFICATION] Port scan anomaly detected on subnet VLAN_ICU. Port 22 SSH brute-force attempts exceeded threshold (50/min).', time: timestamp, status: 'attack' }
+              { agent: 'Incident Response', msg: '[ALERT] [IDENTIFICATION] Unauthorized lateral movement scan detected.', time: timestamp, status: 'attack' }
             ].slice(-50));
           }
           else if (progress === 40) {
             setAgent4Logs(prev => [
               ...prev,
-              { agent: 'Incident Response', msg: '[ACTION] [STOPPING] Deployed quarantine playbook. Disabling interface link for device esp32-hr-sim-001.', time: timestamp, status: 'warning' }
+              { agent: 'Incident Response', msg: '[ACTION] [STOPPING] Isolating compromised node. Dropping unauthorized subnet packets to secure the system.', time: timestamp, status: 'warning' }
             ].slice(-50));
           }
           else if (progress === 60) {
             setAgent4Logs(prev => [
               ...prev,
-              { agent: 'Incident Response', msg: '[POLICY] [PREVENTION] VLAN Sandbox 999 enforced. Dynamic routing rule ALLOW dropped.', time: timestamp, status: 'warning' },
+              { agent: 'Incident Response', msg: '[POLICY] [PREVENTION] System secured. Micro-segmentation access rules restored.', time: timestamp, status: 'warning' },
               { agent: 'Incident Response', msg: '[INFO] [SOLUTION] Permanent Solution: Restrict SSH to bastion hosts, enforce public key authorization with MFA, and apply micro-segmentation inside the clinical network.', time: timestamp, status: 'info' }
-            ].slice(-50));
-
-            setAgent5Logs(prev => [
-              ...prev,
-              { agent: 'Compliance Audit', msg: '[ALERT] [IDENTIFICATION] Security Incident quarantine timeline completed. Signing audit chain.', time: timestamp, status: 'warning' },
-              { agent: 'Compliance Audit', msg: '[SUCCESS] Block #1042 verification complete. NIST Incident Response mapping signed successfully.', time: timestamp, status: 'success' }
             ].slice(-50));
           }
           else if (progress === 80) {
@@ -990,19 +998,19 @@ export const useStore = () => {
             });
             setAgent5Logs(prev => [
               ...prev,
-              { agent: 'Compliance Audit', msg: '[ALERT] [IDENTIFICATION] Critical audit blockchain collision! Hash mismatch at Block #1041.', time: timestamp, status: 'attack' }
+              { agent: 'Compliance Audit', msg: '[ALERT] [IDENTIFICATION] Audit log tampering detected.', time: timestamp, status: 'attack' }
             ].slice(-50));
           }
           else if (progress === 40) {
             setAgent5Logs(prev => [
               ...prev,
-              { agent: 'Compliance Audit', msg: '[ACTION] [STOPPING] Suspended ledger commits. Isolating corrupted block entry state.', time: timestamp, status: 'warning' }
+              { agent: 'Compliance Audit', msg: '[ACTION] [STOPPING] Isolating corrupted block. Dropping invalid ledger commits to secure the system.', time: timestamp, status: 'warning' }
             ].slice(-50));
           }
           else if (progress === 60) {
             setAgent5Logs(prev => [
               ...prev,
-              { agent: 'Compliance Audit', msg: '[POLICY] [PREVENTION] Enforced verification protocol rollback trigger.', time: timestamp, status: 'warning' },
+              { agent: 'Compliance Audit', msg: '[POLICY] [PREVENTION] System secured. Cryptographic rollback repair applied.', time: timestamp, status: 'warning' },
               { agent: 'Compliance Audit', msg: '[INFO] [SOLUTION] Trigger cryptographic rollback repair. Permanent solution: Implement cluster-distributed validation to prevent DB local write overrides.', time: timestamp, status: 'info' }
             ].slice(-50));
           }

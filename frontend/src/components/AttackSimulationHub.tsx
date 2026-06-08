@@ -57,14 +57,6 @@ const AttackSimulationHub: React.FC = () => {
             Trigger real-time attack simulations to evaluate automated identification, stopping, prevention, and compliance ledger logging.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '12px' }}>
-          <button onClick={handleExportJSON} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <FileJson size={16} /> Export Consolidated Logs
-          </button>
-          <button onClick={resetSimulation} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '8px', border: '1px solid rgba(255,255,255,0.1)' }}>
-            <RotateCcw size={16} /> Reset Dashboard
-          </button>
-        </div>
       </div>
 
       {/* Cyber Range Controller */}
