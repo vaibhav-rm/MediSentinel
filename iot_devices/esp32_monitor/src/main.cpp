@@ -19,13 +19,14 @@ void updateVitals(float hr, float spo2);
 void updateStatus(const char* status, uint16_t color);
 void updateLog(const char* logMsg, uint16_t color);
 void mqttCallback(char* topic, byte* payload, unsigned int length);
+void printWrappedText(int startX, int startY, int maxCharsPerLine, int maxLines, const char* text);
 
 // =====================================================
 // WIFI & MQTT
 // =====================================================
 const char* ssid = "Nuvvu Kavalayya";
 const char* password = "23277868";
-const char* mqtt_server = "10.19.147.157";
+const char* mqtt_server = "10.195.152.157";
 const int mqtt_port = 1883;
 
 const char* device_id = "esp32-hr-sim-001";
@@ -52,6 +53,7 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 
 uint32_t tsLastReport = 0;
+uint32_t tsLastMQTTTelemetry = 0;
 volatile bool beatDetected = false;
 bool isQuarantined = false;
 bool sensorAvailable = false;
@@ -112,6 +114,61 @@ void drawUI() {
     updateLog("System online and monitoring...", ST77XX_WHITE);
 }
 
+void printWrappedText(int startX, int startY, int maxCharsPerLine, int maxLines, const char* text) {
+    int len = strlen(text);
+    int lineCount = 0;
+    int charCount = 0;
+    int wordStart = 0;
+    
+    tft.setCursor(startX, startY);
+    
+    while (wordStart < len) {
+        int wordEnd = wordStart;
+        while (wordEnd < len && text[wordEnd] != ' ') {
+            wordEnd++;
+        }
+        
+        int wordLen = wordEnd - wordStart;
+        
+        if (wordLen > maxCharsPerLine) {
+            for (int i = 0; i < wordLen; i++) {
+                if (charCount >= maxCharsPerLine) {
+                    lineCount++;
+                    if (lineCount >= maxLines) return;
+                    tft.setCursor(startX, startY + lineCount * 8);
+                    charCount = 0;
+                }
+                tft.print(text[wordStart + i]);
+                charCount++;
+            }
+        } else {
+            int spaceNeeded = (charCount > 0) ? 1 : 0;
+            if (charCount + spaceNeeded + wordLen > maxCharsPerLine) {
+                lineCount++;
+                if (lineCount >= maxLines) return;
+                tft.setCursor(startX, startY + lineCount * 8);
+                charCount = 0;
+                spaceNeeded = 0;
+            }
+            
+            if (spaceNeeded) {
+                tft.print(' ');
+                charCount++;
+            }
+            
+            for (int i = 0; i < wordLen; i++) {
+                tft.print(text[wordStart + i]);
+            }
+            charCount += wordLen;
+        }
+        
+        wordStart = wordEnd;
+        if (wordStart < len && text[wordStart] == ' ') {
+            wordStart++;
+        }
+    }
+}
+
 void updateVitals(float hr, float spo2) {
     if (hr == lastHR && spo2 == lastSpO2) return;
     lastHR = hr;
@@ -138,41 +195,18 @@ void updateStatus(const char* status, uint16_t color) {
     currentStatusColor = color;
     
     tft.fillRect(82, 40, 76, 32, ST77XX_BLACK);
-    tft.setCursor(82, 40);
     tft.setTextColor(color);
     tft.setTextSize(1);
     
-    // Handle wrap manually for status
-    int len = strlen(status);
-    int charCount = 0;
-    for (int i = 0; i < len; i++) {
-        tft.print(status[i]);
-        charCount++;
-        if (charCount >= 11 && status[i] == ' ') {
-            tft.println();
-            tft.setCursor(82, tft.getCursorY());
-            charCount = 0;
-        }
-    }
+    printWrappedText(82, 40, 12, 4, status);
 }
 
 void updateLog(const char* logMsg, uint16_t color) {
     tft.fillRect(0, 102, 160, 26, ST77XX_BLACK);
-    tft.setCursor(2, 104);
     tft.setTextColor(color);
     tft.setTextSize(1);
     
-    int len = strlen(logMsg);
-    int charCount = 0;
-    for (int i = 0; i < len && i < 100; i++) {
-        tft.print(logMsg[i]);
-        charCount++;
-        if (charCount >= 26 && logMsg[i] == ' ') {
-            tft.println();
-            tft.setCursor(2, tft.getCursorY());
-            charCount = 0;
-        }
-    }
+    printWrappedText(2, 104, 26, 3, logMsg);
 }
 
 // =====================================================
@@ -224,10 +258,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             }
         } 
         else if (strcmp(topic, mqtt_topic_telemetry) == 0) {
-            // Display MQTT telemetry ONLY if local sensor is missing
-            if (!sensorAvailable) {
-                float hr = doc["heart_rate"];
-                float spo2 = doc["spo2"];
+            float hr = doc["heart_rate"];
+            float spo2 = doc["spo2"];
+            // Display MQTT telemetry if local sensor is missing, or if it has no valid reading (meaning no finger on it)
+            if (!sensorAvailable || pox.getHeartRate() < 40 || pox.getHeartRate() > 180) {
+                tsLastMQTTTelemetry = millis();
                 updateVitals(hr, spo2);
             }
         }
@@ -285,6 +320,7 @@ void setup() {
 
     tft.initR(INITR_BLACKTAB);
     tft.setRotation(1);
+    tft.setTextWrap(false);
     
     // Initial Boot Screen
     tft.fillScreen(ST77XX_BLACK);
@@ -345,6 +381,12 @@ void loop() {
         float hr = pox.getHeartRate();
         float spo2 = pox.getSpO2();
 
+        bool hasFinger = (hr > 30.0 && hr < 220.0 && spo2 > 50.0);
+        if (!hasFinger) {
+            hr = 0;
+            spo2 = 0;
+        }
+
         if (attackSimulationActive) {
             hr = random(210, 230);
             spo2 = random(80, 84);
@@ -353,7 +395,11 @@ void loop() {
             if (spo2 < 70 || spo2 > 100) spo2 = 0;
         }
 
-        updateVitals(hr, spo2);
+        // Only update local vitals on screen if we have a valid local reading,
+        // or if we haven't received any MQTT telemetry in the last 5 seconds.
+        if (hr > 0 || (millis() - tsLastMQTTTelemetry > 5000)) {
+            updateVitals(hr, spo2);
+        }
 
         StaticJsonDocument<256> doc;
         doc["device_id"] = device_id;

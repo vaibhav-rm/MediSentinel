@@ -3,20 +3,16 @@ import { BrainCircuit, Cpu, Target, Shield, AlertTriangle, ShieldCheck, RefreshC
 import { useStore } from '../useStore';
 
 const MLManagement: React.FC = () => {
-  const { agentLogs, attackActive, toggleAttack, resetSimulation } = useStore();
+  const { agent2Logs, attackActive, toggleAttack, resetSimulation } = useStore();
   const [models, setModels] = useState<any[]>([]);
   const [robustness, setRobustness] = useState<any>({});
   const terminalEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Filter logs for Agent 2: IoT Guardian
-  const myLogs = agentLogs.filter(log => log.agent_name === 'IoT Guardian');
-
-  // Auto scroll logs
   useEffect(() => {
     if (terminalEndRef.current) {
       terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [myLogs]);
+  }, [agent2Logs]);
 
   useEffect(() => {
     setModels([
@@ -150,12 +146,12 @@ const MLManagement: React.FC = () => {
           height: '180px', 
           overflowY: 'auto' 
         }}>
-          {myLogs.length === 0 ? (
+          {agent2Logs.length === 0 ? (
             <div style={{ color: 'var(--text-muted)' }}>&gt;_ Awaiting behavior sequence telemetry...</div>
           ) : (
-            myLogs.map((log, i) => (
-              <div key={i} style={{ marginBottom: '6px', color: log.status === 'anomaly' ? 'var(--color-danger)' : 'var(--color-success)' }}>
-                [{new Date(log.timestamp).toLocaleTimeString()}] {log.message}
+            agent2Logs.map((log, i) => (
+              <div key={i} style={{ marginBottom: '6px', color: log.status === 'anomaly' ? 'var(--color-danger)' : log.status === 'success' ? 'var(--color-success)' : 'var(--color-warning)' }}>
+                [{log.time}] {log.msg}
               </div>
             ))
           )}

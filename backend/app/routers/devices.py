@@ -54,8 +54,20 @@ async def update_device(device_id: str, device: DeviceUpdate, db: AsyncSession =
         try:
             from app.mqtt_client import publish_mqtt_message
             publish_mqtt_message(f"medisentinel/iot/control/{device_id}", {"status": db_device.status})
+            
+            # Broadcast device status update to websocket clients
+            from app.ws_manager import ws_manager
+            import json
+            ws_payload = {
+                "topic": "devices/telemetry",
+                "data": {
+                    "device_id": device_id,
+                    "status": db_device.status
+                }
+            }
+            await ws_manager.broadcast(json.dumps(ws_payload))
         except Exception as e:
             import logging
-            logging.getLogger(__name__).error(f"Failed to publish status change to MQTT: {e}")
+            logging.getLogger(__name__).error(f"Failed to publish status change to MQTT/WS: {e}")
 
     return db_device
