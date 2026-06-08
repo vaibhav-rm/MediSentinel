@@ -10,7 +10,8 @@ const Dashboard = () => {
     globalMetrics, 
     collabMessages, 
     networkMetrics,
-    deviceMetrics
+    deviceMetrics,
+    attackType
   } = useStore();
 
   const criticalAlerts = alerts.filter(a => a.severity === 'critical' && !a.is_resolved);
@@ -55,8 +56,8 @@ const Dashboard = () => {
       <div className="stats-grid" style={{ marginBottom: '24px' }}>
         <div className="glass-panel stat-card" style={{ borderLeft: '3px solid var(--color-accent)' }}>
           <div className="stat-title"><ShieldAlert size={16} /> Active Threats</div>
-          <div className="stat-value" style={{ color: attackActive ? 'var(--color-accent)' : 'var(--text-main)' }}>
-            {globalMetrics.activeAttackCount}
+          <div className="stat-value" style={{ color: attackActive ? 'var(--color-accent)' : 'var(--text-main)', fontSize: '1.2rem', lineHeight: '1.5rem', marginTop: '8px' }}>
+            {attackActive ? attackType.replace('_', ' ').toUpperCase() : 'None'}
           </div>
           <div className="stat-trend" style={{ color: 'var(--text-muted)' }}>
             {attackActive ? '▲ Malicious payloads running' : '● No active attacks'}
@@ -66,7 +67,7 @@ const Dashboard = () => {
         <div className="glass-panel stat-card" style={{ borderLeft: '3px solid var(--color-primary)' }}>
           <div className="stat-title"><Clock size={16} /> Detection Latency</div>
           <div className="stat-value" style={{ color: 'var(--color-primary)' }}>
-            {attackActive ? '1.14s' : '0.00s'}
+            {attackActive ? (Math.random() * 0.3 + 0.9).toFixed(2) + 's' : '0.00s'}
           </div>
           <div className="stat-trend trend-up">
             ▲ Real-time ingestion

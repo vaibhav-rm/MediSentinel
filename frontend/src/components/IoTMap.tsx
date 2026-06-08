@@ -99,9 +99,10 @@ const IoTMap: React.FC = () => {
 
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', marginTop: '16px' }}>
                     {finalDeptDevices.map(device => {
-                      const color = getDeviceColor(device);
+                      const isOffline = device.device_id !== 'esp32-hr-sim-001';
+                      const color = isOffline ? 'var(--text-muted)' : getDeviceColor(device);
                       const isQuarantined = device.status === 'quarantined';
-                      const isCompromised = color === 'var(--color-accent)' && !isQuarantined;
+                      const isCompromised = color === 'var(--color-accent)' && !isQuarantined && !isOffline;
 
                       return (
                         <div 
@@ -115,24 +116,24 @@ const IoTMap: React.FC = () => {
                             padding: '12px', borderRadius: '8px', cursor: 'pointer',
                             transition: 'all 0.2s', width: '220px',
                             boxShadow: selectedDevice?.device_id === device.device_id ? `0 0 15px ${color}44` : 'none',
-                            opacity: isQuarantined ? 0.6 : 1
+                            opacity: (isQuarantined || isOffline) ? 0.6 : 1
                           }}
                           title={device.device_id}
                         >
                           <div style={{
                             width: '32px', height: '32px', borderRadius: '50%', backgroundColor: color,
                             display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                            boxShadow: `0 0 10px ${color}66`,
+                            boxShadow: isOffline ? 'none' : `0 0 10px ${color}66`,
                             animation: isCompromised ? 'pulse 1s infinite alternate' : 'none'
                           }}>
                             <HeartPulse size={16} color="#000" style={{ animation: isCompromised ? 'ping 0.8s infinite' : 'none' }} />
                           </div>
                           <div style={{ overflow: 'hidden' }}>
-                            <div style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+                            <div style={{ fontSize: '0.9rem', fontWeight: 600, color: isOffline ? 'var(--text-muted)' : 'var(--text-main)', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
                               {device.device_id}
                             </div>
                             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'capitalize' }}>
-                              {device.device_type.replace('_', ' ')}
+                              {isOffline ? 'SIMULATED (OFFLINE)' : device.device_type.replace('_', ' ')}
                             </div>
                           </div>
                         </div>

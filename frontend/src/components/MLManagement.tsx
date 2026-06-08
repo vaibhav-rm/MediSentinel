@@ -6,22 +6,42 @@ const MLManagement: React.FC = () => {
   const { agent2Logs, attackActive, toggleAttack, resetSimulation } = useStore();
   const [models, setModels] = useState<any[]>([]);
   const [robustness, setRobustness] = useState<any>({});
-  const terminalEndRef = useRef<HTMLDivElement | null>(null);
+  const terminalContainerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (terminalEndRef.current) {
-      terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (terminalContainerRef.current) {
+      terminalContainerRef.current.scrollTop = terminalContainerRef.current.scrollHeight;
     }
   }, [agent2Logs]);
 
   useEffect(() => {
     setModels([
-      { id: 1, name: "Network LSTM", version: "v1.2.4", dataset: "CICIDS-2018", accuracy: 96.8, fpr: 1.4, last_retrained: "2026-04-25T10:00:00Z", status: "active" },
-      { id: 2, name: "Isolation Forest", version: "v2.0.1", dataset: "NSL-KDD", accuracy: 95.2, fpr: 2.1, last_retrained: "2026-04-20T10:00:00Z", status: "active" },
-      { id: 3, name: "IoT Autoencoder", version: "v1.0.0", dataset: "IoTID20", accuracy: 98.1, fpr: 0.8, last_retrained: "2026-04-28T14:30:00Z", status: "active" }
+      { id: 1, name: "Network LSTM", version: "v1.2.4", dataset: "CICIDS-2018", accuracy: 96.8, fpr: 1.4, last_retrained: new Date().toISOString(), status: "active" },
+      { id: 2, name: "Isolation Forest", version: "v2.0.1", dataset: "NSL-KDD", accuracy: 95.2, fpr: 2.1, last_retrained: new Date().toISOString(), status: "active" },
+      { id: 3, name: "IoT Autoencoder", version: "v1.0.0", dataset: "IoTID20", accuracy: 98.1, fpr: 0.8, last_retrained: new Date().toISOString(), status: "active" }
     ]);
     setRobustness({ evasion_resistance: 92, poisoning_resistance: 88, extraction_resistance: 95, overall_art_score: 91.6 });
   }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setModels(prev => prev.map(m => {
+        const accShift = (Math.random() - 0.5) * 0.4;
+        const fprShift = (Math.random() - 0.5) * 0.1;
+        return {
+          ...m,
+          accuracy: attackActive 
+            ? Math.max(80, m.accuracy - Math.abs(accShift) * 5).toFixed(2) 
+            : Math.min(99.9, m.accuracy + accShift).toFixed(2),
+          fpr: attackActive 
+            ? Math.min(10, m.fpr + Math.abs(fprShift) * 2).toFixed(2) 
+            : Math.max(0.1, m.fpr + fprShift).toFixed(2),
+          last_retrained: new Date().toISOString()
+        };
+      }));
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [attackActive]);
 
   return (
     <div className="main-content">
@@ -32,59 +52,6 @@ const MLManagement: React.FC = () => {
             ML Model Management
           </h1>
           <p style={{ color: 'var(--text-muted)' }}>Configure neural autoencoders and threat sequencing classifiers.</p>
-        </div>
-      </div>
-
-      {/* Interactive Simulation Switch Card */}
-      <div className="glass-panel" style={{ padding: '24px', marginBottom: '24px', border: attackActive ? '1px solid rgba(255,0,85,0.3)' : '1px solid rgba(0,255,136,0.2)', background: 'rgba(0,0,0,0.2)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div>
-            <h2 style={{ fontSize: '1.2rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              {attackActive ? <AlertTriangle color="var(--color-danger)" /> : <ShieldCheck color="var(--color-success)" />}
-              Interactive Threat Simulation Control
-            </h2>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '4px' }}>
-              {attackActive 
-                ? "Simulating spoofed telemetry payloads (High heart rate & anomalous SpO2) on IoT streams." 
-                : "IoT device streams are normal, secure, and fully compliant."}
-            </p>
-          </div>
-          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-            <button 
-              onClick={() => toggleAttack(!attackActive)}
-              style={{
-                background: attackActive ? 'var(--color-danger)' : 'var(--color-primary)',
-                color: '#000',
-                border: 'none',
-                padding: '10px 20px',
-                borderRadius: '6px',
-                fontWeight: 'bold',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                transition: 'all 0.2s'
-              }}
-            >
-              {attackActive ? "Stop Attack Simulation" : "Start Attack Simulation"}
-            </button>
-            <button 
-              onClick={resetSimulation}
-              style={{
-                background: 'rgba(255,255,255,0.1)',
-                color: '#fff',
-                border: '1px solid rgba(255,255,255,0.2)',
-                padding: '10px 16px',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px'
-              }}
-            >
-              <RefreshCw size={16} /> Reset
-            </button>
-          </div>
         </div>
       </div>
 
@@ -136,7 +103,7 @@ const MLManagement: React.FC = () => {
         <h2 style={{ fontSize: '1.2rem', marginBottom: '16px', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
           <BrainCircuit size={18} color="var(--color-accent)" /> Agent 2: Deep Learning Autoencoder behavioral log
         </h2>
-        <div style={{ 
+        <div ref={terminalContainerRef} style={{ 
           background: 'rgba(0,0,0,0.6)', 
           fontFamily: 'monospace', 
           fontSize: '0.85rem', 
@@ -144,18 +111,18 @@ const MLManagement: React.FC = () => {
           borderRadius: '8px', 
           border: '1px solid rgba(255,255,255,0.05)', 
           height: '180px', 
-          overflowY: 'auto' 
+          overflowY: 'auto',
+          scrollBehavior: 'smooth'
         }}>
           {agent2Logs.length === 0 ? (
             <div style={{ color: 'var(--text-muted)' }}>&gt;_ Awaiting behavior sequence telemetry...</div>
           ) : (
             agent2Logs.map((log, i) => (
-              <div key={i} style={{ marginBottom: '6px', color: log.status === 'anomaly' ? 'var(--color-danger)' : log.status === 'success' ? 'var(--color-success)' : 'var(--color-warning)' }}>
+              <div key={i} style={{ marginBottom: '6px', color: log.status === 'anomaly' ? 'var(--color-danger)' : log.status === 'success' ? 'var(--color-success)' : log.status === 'attack' ? 'var(--color-danger)' : 'var(--color-warning)' }}>
                 [{log.time}] {log.msg}
               </div>
             ))
           )}
-          <div ref={terminalEndRef} />
         </div>
       </div>
 
@@ -178,9 +145,9 @@ const MLManagement: React.FC = () => {
                 <td style={{ padding: '12px 8px', fontWeight: 'bold', color: 'var(--color-primary)' }}>{m.name}</td>
                 <td style={{ padding: '12px 8px' }}>{m.version}</td>
                 <td style={{ padding: '12px 8px', fontSize: '0.9rem' }}>{m.dataset}</td>
-                <td style={{ padding: '12px 8px', color: 'var(--color-success)' }}>{m.accuracy}%</td>
-                <td style={{ padding: '12px 8px', color: 'var(--color-danger)' }}>{m.fpr}%</td>
-                <td style={{ padding: '12px 8px', fontSize: '0.9rem', color: 'var(--text-muted)' }}>{new Date(m.last_retrained).toLocaleDateString()}</td>
+                <td style={{ padding: '12px 8px', color: 'var(--color-success)' }}>{Number(m.accuracy).toFixed(1)}%</td>
+                <td style={{ padding: '12px 8px', color: 'var(--color-danger)' }}>{Number(m.fpr).toFixed(1)}%</td>
+                <td style={{ padding: '12px 8px', fontSize: '0.9rem', color: 'var(--text-muted)' }}>{new Date(m.last_retrained).toLocaleTimeString()}</td>
               </tr>
             ))}
           </tbody>
