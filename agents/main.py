@@ -123,7 +123,11 @@ async def main():
                 await asyncio.sleep(0.2)
                 await send_agent_log("Network Monitor", "warning", "[POLICY] [PREVENTION] Applied automated rate-limiting policy to port 80/443 on IoT gateway subnet.")
                 await asyncio.sleep(0.2)
-                net_msg = "[INFO] [SOLUTION] Complete: Configure ingress QoS queue shaping, enable syncookies on host kernel, and deploy edge DDoS scrubbers."
+                await send_agent_log("Network Monitor", "info", "[INFO] [SOLUTION] Configure ingress QoS queue shaping, enable syncookies on host kernel, and deploy edge DDoS scrubbers.")
+                await asyncio.sleep(0.2)
+                await send_agent_log("Network Monitor", "success", "[ACTION] [SELF-HEALING] Reconstructed traffic rules. Traffic ingestion rate restored to nominal bounds (12 pkts/sec).")
+                await asyncio.sleep(0.2)
+                net_msg = "[SUCCESS] Network Monitor threat resolved. Subnet status restored to SECURE."
                 net_status = "success"
             elif network_result.get("is_anomaly") or attack_type == "agent4_vlan":
                 sigs = network_result.get("matched_signatures", [])
@@ -163,7 +167,11 @@ async def main():
                 await asyncio.sleep(0.2)
                 await send_agent_log("IoT Guardian", "warning", "[POLICY] [PREVENTION] Enforced dynamic baseline mutation rejection. Telemetry from device quarantined.")
                 await asyncio.sleep(0.2)
-                iot_msg = "[INFO] [SOLUTION] Complete: Implement cryptographically signed telemetry frames from device firmware (HMAC-SHA256) and enroll devices in mutual TLS (mTLS)."
+                await send_agent_log("IoT Guardian", "info", "[INFO] [SOLUTION] Implement cryptographically signed telemetry frames from device firmware (HMAC-SHA256) and enroll devices in mutual TLS (mTLS).")
+                await asyncio.sleep(0.2)
+                await send_agent_log("IoT Guardian", "success", "[ACTION] [SELF-HEALING] Telemetry values returned within clinical bounds. Restoring device status to ACTIVE.")
+                await asyncio.sleep(0.2)
+                iot_msg = "[SUCCESS] IoT telemetry verification successful. Patient heart rate monitoring baseline is SECURE."
                 iot_status = "success"
             elif iot_result.get("is_anomaly"):
                 ae_info = iot_models.get("autoencoder", {})
@@ -197,7 +205,11 @@ async def main():
                 await asyncio.sleep(0.2)
                 await send_agent_log("Threat Intelligence", "warning", "[POLICY] [PREVENTION] Injected firewall IP drop rule. Blocked all ingress/egress to remote subnet 45.33.32.0/24.")
                 await asyncio.sleep(0.2)
-                ti_msg = "[INFO] [SOLUTION] Complete: Configure DNS firewalls (RPZ), restrict outbound access to whitelisted medical proxy domains, and enforce zero-trust egress routing."
+                await send_agent_log("Threat Intelligence", "info", "[INFO] [SOLUTION] Configure DNS firewalls (RPZ), restrict outbound access to whitelisted medical proxy domains, and enforce zero-trust egress routing.")
+                await asyncio.sleep(0.2)
+                await send_agent_log("Threat Intelligence", "success", "[ACTION] [SELF-HEALING] Egress connections verified clean. Dynamic firewall rule cleanup triggered.")
+                await asyncio.sleep(0.2)
+                ti_msg = "[SUCCESS] C2 connection completely severed. Threat intelligence alert status cleared."
                 ti_status = "success"
             elif network.get("destination_ip") == "45.33.32.156":
                 ti_msg = (
@@ -250,7 +262,11 @@ async def main():
                 await asyncio.sleep(0.2)
                 await send_agent_log("Incident Response", "warning", "[POLICY] [PREVENTION] Dynamic VLAN sandbox 999 isolation rule enforced on switch fabric ports.")
                 await asyncio.sleep(0.2)
-                ir_msg = "[INFO] [SOLUTION] Complete: Enforce SSH key-based authentication, configure fail2ban policies, disable password logins, and restrict VLAN routing permissions."
+                await send_agent_log("Incident Response", "info", "[INFO] [SOLUTION] Enforce SSH key-based authentication, configure fail2ban policies, disable password logins, and restrict VLAN routing permissions.")
+                await asyncio.sleep(0.2)
+                await send_agent_log("Incident Response", "success", "[ACTION] [SELF-HEALING] Micro-segmentation access rules restored. SSH authentication limits applied.")
+                await asyncio.sleep(0.2)
+                ir_msg = "[SUCCESS] Restored dynamic SSH authentication bounds. VLAN segment status is SECURE."
                 ir_status = "success"
                 
                 # Send alert to backend

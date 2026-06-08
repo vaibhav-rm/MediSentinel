@@ -831,6 +831,18 @@ export const useStore = () => {
               { agent: 'Compliance Audit', msg: '[SUCCESS] HIPAA transaction logged successfully to hash ledger. Block hash: 39af20f782ba.', time: timestamp, status: 'success' }
             ].slice(-50));
           }
+          else if (progress === 80) {
+            setAgent1Logs(prev => [
+              ...prev,
+              { agent: 'Network Monitor', msg: '[ACTION] [SELF-HEALING] Reconstructed traffic rules. Traffic ingestion rate restored to nominal bounds (12 pkts/sec).', time: timestamp, status: 'success' }
+            ].slice(-50));
+          }
+          else if (progress === 100) {
+            setAgent1Logs(prev => [
+              ...prev,
+              { agent: 'Network Monitor', msg: '[SUCCESS] Network Monitor threat resolved. Subnet status restored to SECURE.', time: timestamp, status: 'success' }
+            ].slice(-50));
+          }
         }
 
         // --- AGENT 2 LOGIC ---
@@ -858,6 +870,18 @@ export const useStore = () => {
               ...prev,
               { agent: 'Compliance Audit', msg: '[ALERT] [IDENTIFICATION] Device telemetry exception registered. Generating blockchain report.', time: timestamp, status: 'warning' },
               { agent: 'Compliance Audit', msg: '[SUCCESS] Registered Block #1042. Clinical Data Integrity check passed (§164.312(c)).', time: timestamp, status: 'success' }
+            ].slice(-50));
+          }
+          else if (progress === 80) {
+            setAgent2Logs(prev => [
+              ...prev,
+              { agent: 'IoT Guardian', msg: '[ACTION] [SELF-HEALING] Telemetry values returned within clinical bounds. Restoring device status to ACTIVE.', time: timestamp, status: 'success' }
+            ].slice(-50));
+          }
+          else if (progress === 100) {
+            setAgent2Logs(prev => [
+              ...prev,
+              { agent: 'IoT Guardian', msg: '[SUCCESS] IoT telemetry verification successful. Patient heart rate monitoring baseline is SECURE.', time: timestamp, status: 'success' }
             ].slice(-50));
           }
         }
@@ -889,6 +913,18 @@ export const useStore = () => {
               { agent: 'Compliance Audit', msg: '[SUCCESS] Block #1042 verified and sealed. HIPAA Access Control check passed (§164.312(a)).', time: timestamp, status: 'success' }
             ].slice(-50));
           }
+          else if (progress === 80) {
+            setAgent3Logs(prev => [
+              ...prev,
+              { agent: 'Threat Intelligence', msg: '[ACTION] [SELF-HEALING] Egress connections verified clean. Dynamic firewall rule cleanup triggered.', time: timestamp, status: 'success' }
+            ].slice(-50));
+          }
+          else if (progress === 100) {
+            setAgent3Logs(prev => [
+              ...prev,
+              { agent: 'Threat Intelligence', msg: '[SUCCESS] C2 connection completely severed. Threat intelligence alert status cleared.', time: timestamp, status: 'success' }
+            ].slice(-50));
+          }
         }
 
         // --- AGENT 4 LOGIC ---
@@ -916,6 +952,18 @@ export const useStore = () => {
               ...prev,
               { agent: 'Compliance Audit', msg: '[ALERT] [IDENTIFICATION] Security Incident quarantine timeline completed. Signing audit chain.', time: timestamp, status: 'warning' },
               { agent: 'Compliance Audit', msg: '[SUCCESS] Block #1042 verification complete. NIST Incident Response mapping signed successfully.', time: timestamp, status: 'success' }
+            ].slice(-50));
+          }
+          else if (progress === 80) {
+            setAgent4Logs(prev => [
+              ...prev,
+              { agent: 'Incident Response', msg: '[ACTION] [SELF-HEALING] Micro-segmentation access rules restored. SSH authentication limits applied.', time: timestamp, status: 'success' }
+            ].slice(-50));
+          }
+          else if (progress === 100) {
+            setAgent4Logs(prev => [
+              ...prev,
+              { agent: 'Incident Response', msg: '[SUCCESS] Restored dynamic SSH authentication bounds. VLAN segment status is SECURE.', time: timestamp, status: 'success' }
             ].slice(-50));
           }
         }
