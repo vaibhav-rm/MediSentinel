@@ -3,10 +3,10 @@ import { Shield, CheckCircle, Clock, AlertTriangle, ShieldAlert, ShieldCheck, Te
 import { useStore } from '../useStore';
 
 const IncidentResponse: React.FC = () => {
-  const { 
-    alerts, 
-    attackActive, 
-    forceQuarantine, 
+  const {
+    alerts,
+    attackActive,
+    forceQuarantine,
     escalateIncident,
     incidentMetrics,
     deviceMetrics,
@@ -21,7 +21,7 @@ const IncidentResponse: React.FC = () => {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [agent4Logs]);
-  
+
   const activeIncidents = [...alerts].filter(a => !a.is_resolved).sort((a, b) => {
     const sevScore: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
     return (sevScore[b.severity] || 0) - (sevScore[a.severity] || 0);
@@ -58,7 +58,7 @@ const IncidentResponse: React.FC = () => {
           <h2 style={{ fontSize: '1.2rem', marginBottom: '16px', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <GitFork size={18} color="var(--color-secondary)" /> Playbook Decision Flow Tree
           </h2>
-          
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', background: 'rgba(0,0,0,0.5)', padding: '16px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)', position: 'relative' }}>
             {/* Step 1 */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px', borderRadius: '6px', background: attackActive ? 'rgba(189, 0, 255, 0.1)' : 'rgba(255,255,255,0.02)', border: attackActive ? '1px solid var(--color-secondary)' : '1px solid rgba(255,255,255,0.05)' }}>
@@ -137,7 +137,7 @@ const IncidentResponse: React.FC = () => {
         {/* Active Incident Queue */}
         <div className="glass-panel" style={{ padding: '24px', height: '360px', overflowY: 'auto' }}>
           <h2 style={{ fontSize: '1.2rem', marginBottom: '16px', color: 'var(--text-primary)' }}>Active Incident Queue</h2>
-          
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {!attackActive ? (
               <div style={{ textAlign: 'center', color: 'var(--text-muted)', marginTop: '60px' }}>
@@ -145,10 +145,10 @@ const IncidentResponse: React.FC = () => {
                 No active threats detected. Network secure.
               </div>
             ) : (
-              <div style={{ 
-                background: 'rgba(255,255,255,0.02)', 
+              <div style={{
+                background: 'rgba(255,255,255,0.02)',
                 border: '1px solid rgba(255,0,85,0.3)',
-                borderRadius: '8px', padding: '16px' 
+                borderRadius: '8px', padding: '16px'
               }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
                   <div style={{ fontWeight: 'bold', fontSize: '1.1rem', fontFamily: 'monospace' }}>esp32-hr-sim-001</div>
@@ -159,7 +159,7 @@ const IncidentResponse: React.FC = () => {
                 <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '16px' }}>
                   Device telemetry spoofing of heart rate ({deviceMetrics.heartRate} BPM) violates clinical bounds. Outbound beacon to C2 server detected.
                 </p>
-                
+
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem', marginBottom: '16px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <Clock size={14} color="var(--text-muted)" />
@@ -169,7 +169,7 @@ const IncidentResponse: React.FC = () => {
                     {incidentMetrics.decisionTree.containmentProtocol === 'EXECUTED' ? '✓ Playbook Deployed' : '● Mitigating...'}
                   </div>
                 </div>
-                
+
                 {/* Manual Actions */}
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <button onClick={() => forceQuarantine('esp32-hr-sim-001')} style={{ flex: 1, padding: '8px', background: 'rgba(255,0,60,0.1)', border: '1px solid rgba(255,0,60,0.3)', color: 'var(--color-accent)', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}>Enforce Quarantine</button>
@@ -209,15 +209,15 @@ const IncidentResponse: React.FC = () => {
         <h2 style={{ fontSize: '1.2rem', marginBottom: '16px', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Terminal size={18} color="var(--color-primary)" /> Agent 4: Incident Response Orchestration Logs
         </h2>
-        <div ref={scrollRef} style={{ 
-          background: 'rgba(7,7,10,0.85)', 
-          fontFamily: 'monospace', 
-          fontSize: '0.85rem', 
-          padding: '16px', 
-          borderRadius: '8px', 
-          border: '1px solid rgba(255,255,255,0.05)', 
-          height: '180px', 
-          overflowY: 'auto' 
+        <div ref={scrollRef} style={{
+          background: 'rgba(7,7,10,0.85)',
+          fontFamily: 'monospace',
+          fontSize: '0.85rem',
+          padding: '16px',
+          borderRadius: '8px',
+          border: '1px solid rgba(255,255,255,0.05)',
+          height: '180px',
+          overflowY: 'auto'
         }}>
           {agent4Logs.length === 0 ? (
             <div style={{ color: 'var(--text-muted)' }}>&gt;_ Playbooks armed. Awaiting alert propagation from Agent 3 (Threat Intel)...</div>

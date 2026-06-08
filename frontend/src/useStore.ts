@@ -90,7 +90,7 @@ export interface GlobalMetrics {
 const generateBaselineLogs = (agentName: string): AgentLog[] => {
   const logs: AgentLog[] = [];
   const now = Date.now();
-  
+
   const templates: Record<string, string[]> = {
     'Network Monitor': [
       'Initializing LSTM network monitor pipeline on interface eth0.',
@@ -160,7 +160,7 @@ const generateBaselineLogs = (agentName: string): AgentLog[] => {
     const timeOffset = (45 - i) * 30 * 1000; // 30 seconds apart
     const logTime = new Date(now - timeOffset).toLocaleTimeString();
     const template = agentTemplates[i % agentTemplates.length];
-    
+
     logs.push({
       agent: agentName,
       msg: `[INFO] ${template}`,
@@ -310,7 +310,7 @@ export const useStore = () => {
     } catch (err) {
       console.error("Failed to reset simulation:", err);
     }
-    
+
     // Client-side reset
     setAttackActive(false);
     setDevices(prev => prev.map(d => ({ ...d, status: 'active' })));
@@ -489,7 +489,7 @@ export const useStore = () => {
             attackType
           };
         }
-        
+
         let mutation = 'Polymorphic Encoder Mode';
         let evasion = ['Obfuscated TCP Payloads', 'Fragmented IP Packets'];
         let priv = 'Scanning SUID binaries...';
@@ -823,7 +823,7 @@ export const useStore = () => {
               { agent: 'Network Monitor', msg: '[POLICY] [PREVENTION] Applied automated rate-limiting policy to port 80/443 on IoT gateway subnet.', time: timestamp, status: 'warning' },
               { agent: 'Network Monitor', msg: '[INFO] [SOLUTION] Permanent Solution: Configure ingress QoS queue shaping, enable syncookies on host kernel, and deploy edge DDoS scrubbers.', time: timestamp, status: 'info' }
             ].slice(-50));
-            
+
             // Log block creation in Agent 5
             setAgent5Logs(prev => [
               ...prev,
@@ -1081,12 +1081,12 @@ export const useStore = () => {
         setLoading(false);
       }
     };
-    
+
     fetchInitialData();
 
     // Setup WebSocket for live updates
     const ws = new WebSocket(BACKEND_WS_URL);
-    
+
     ws.onopen = () => {
       console.log("Connected to MediSentinel live WebSocket");
     };
@@ -1103,22 +1103,22 @@ export const useStore = () => {
           });
         }
         else if (topic === 'devices/telemetry') {
-           setDevices(prev => prev.map(d => 
-             d.device_id === data.device_id 
-              ? { 
-                  ...d, 
-                  status: data.status || d.status,
-                  last_seen: new Date().toISOString(),
-                  metadata_json: {
-                    ...d.metadata_json,
-                    heart_rate: data.heart_rate !== undefined ? data.heart_rate : d.metadata_json?.heart_rate,
-                    spo2: data.spo2 !== undefined ? data.spo2 : d.metadata_json?.spo2,
-                    battery_level: data.battery_level !== undefined ? data.battery_level : d.metadata_json?.battery_level,
-                    network: data.network !== undefined ? data.network : d.metadata_json?.network
-                  }
-                } 
+          setDevices(prev => prev.map(d =>
+            d.device_id === data.device_id
+              ? {
+                ...d,
+                status: data.status || d.status,
+                last_seen: new Date().toISOString(),
+                metadata_json: {
+                  ...d.metadata_json,
+                  heart_rate: data.heart_rate !== undefined ? data.heart_rate : d.metadata_json?.heart_rate,
+                  spo2: data.spo2 !== undefined ? data.spo2 : d.metadata_json?.spo2,
+                  battery_level: data.battery_level !== undefined ? data.battery_level : d.metadata_json?.battery_level,
+                  network: data.network !== undefined ? data.network : d.metadata_json?.network
+                }
+              }
               : d
-           ));
+          ));
         }
         else if (topic === 'simulation/attack_toggle') {
           setAttackActive(data.attack_active);
@@ -1149,19 +1149,19 @@ export const useStore = () => {
           }
         }
         else if (topic === 'alerts' || topic === 'anomalies') {
-            const isDeviceAnomaly = data.type?.includes("Device") || data.severity === "critical";
-            
-            const newAlert: Alert = {
-              id: data.id || Math.floor(Math.random() * 1000000),
-              device_id: data.device_id || "UNKNOWN",
-              type: data.type || (isDeviceAnomaly ? 'Device Behavior Anomaly' : 'Network Anomaly'),
-              severity: data.severity || (isDeviceAnomaly ? 'critical' : 'high'),
-              description: data.description || 'Abnormal behavior detected by AI Agents.',
-              timestamp: data.timestamp || new Date().toISOString(),
-              is_resolved: false
-            };
+          const isDeviceAnomaly = data.type?.includes("Device") || data.severity === "critical";
 
-            setAlerts(prev => [newAlert, ...prev].slice(0, 50));
+          const newAlert: Alert = {
+            id: data.id || Math.floor(Math.random() * 1000000),
+            device_id: data.device_id || "UNKNOWN",
+            type: data.type || (isDeviceAnomaly ? 'Device Behavior Anomaly' : 'Network Anomaly'),
+            severity: data.severity || (isDeviceAnomaly ? 'critical' : 'high'),
+            description: data.description || 'Abnormal behavior detected by AI Agents.',
+            timestamp: data.timestamp || new Date().toISOString(),
+            is_resolved: false
+          };
+
+          setAlerts(prev => [newAlert, ...prev].slice(0, 50));
         }
       } catch (e) {
         console.error("Failed parsing WS message", e);
@@ -1177,15 +1177,15 @@ export const useStore = () => {
     };
   }, []);
 
-  return { 
-    devices, 
-    alerts, 
-    agentLogs, 
-    attackActive, 
-    toggleAttack, 
-    resetSimulation, 
-    forceQuarantine, 
-    escalateIncident, 
+  return {
+    devices,
+    alerts,
+    agentLogs,
+    attackActive,
+    toggleAttack,
+    resetSimulation,
+    forceQuarantine,
+    escalateIncident,
     loading,
     attackType,
     setAttackType,
