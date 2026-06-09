@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Map as MapIcon, Info, HeartPulse, Activity, AlertTriangle, ShieldCheck, Cpu } from 'lucide-react';
+import { Map as MapIcon, Info, HeartPulse, Activity, AlertTriangle, ShieldCheck, Cpu, UploadCloud, Undo2, Lock } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
 import { useStore } from '../useStore';
 import type { Device } from '../types';
@@ -12,14 +12,23 @@ const DEPARTMENTS = [
 ];
 
 const IoTMap: React.FC = () => {
-  const { 
-    devices, 
-    alerts, 
-    attackActive, 
+  const {
+    devices,
+    alerts,
+    attackActive,
     deviceMetrics,
-    attackType
+    attackType,
+    updateFirmware,
+    rollbackFirmware
   } = useStore();
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
+
+  // Bump the minor component of a semantic version (v1.0.0 -> v1.1.0).
+  const nextVersion = (v: string) => {
+    const m = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(v || 'v1.0.0');
+    if (!m) return 'v1.1.0';
+    return `v${m[1]}.${Number(m[2]) + 1}.0`;
+  };
 
   // Distribute devices among departments deterministically for demo
   const getDept = (d: Device) => {
@@ -261,6 +270,75 @@ const IoTMap: React.FC = () => {
                     </div>
                   </div>
                   
+                  {/* Secure Firmware Update & Rollback */}
+                  {(() => {
+                    const fw = activeDevice.metadata_json?.firmware || {};
+                    const version = fw.version || 'v1.0.0';
+                    const previous = fw.previous || null;
+                    const fwStatus = fw.status || 'stable';
+                    const busy = fwStatus === 'updating' || fwStatus === 'rolling_back';
+                    const statusColor =
+                      fwStatus === 'rejected' ? 'var(--color-accent)'
+                        : busy ? 'var(--color-warning)'
+                          : 'var(--color-success)';
+                    return (
+                      <div style={{ marginTop: '8px', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '16px' }}>
+                        <label style={{ fontSize: '0.85rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '12px' }}>
+                          <Lock size={14} /> Secure Firmware (HMAC-signed)
+                        </label>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Running version</span>
+                          <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{version}</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Status</span>
+                          <span style={{ fontSize: '0.8rem', fontWeight: 600, color: statusColor, textTransform: 'capitalize' }}>
+                            {busy ? `${fwStatus.replace('_', ' ')}…` : fwStatus}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Rollback target</span>
+                          <span style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: previous ? 'var(--text-main)' : 'var(--text-muted)' }}>
+                            {previous || '—'}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', gap: '10px' }}>
+                          <button
+                            onClick={() => updateFirmware(activeDevice.device_id, nextVersion(version))}
+                            disabled={busy}
+                            style={{
+                              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                              padding: '9px', borderRadius: '8px', cursor: busy ? 'not-allowed' : 'pointer',
+                              fontSize: '0.82rem', fontWeight: 600, opacity: busy ? 0.5 : 1,
+                              background: 'var(--color-primary-soft)', color: 'var(--color-primary)',
+                              border: '1px solid rgba(90,144,240,0.35)'
+                            }}
+                          >
+                            <UploadCloud size={15} /> Push Update → {nextVersion(version)}
+                          </button>
+                          <button
+                            onClick={() => rollbackFirmware(activeDevice.device_id)}
+                            disabled={busy || !previous}
+                            title={previous ? `Roll back to ${previous}` : 'No previous version'}
+                            style={{
+                              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                              padding: '9px 14px', borderRadius: '8px',
+                              cursor: (busy || !previous) ? 'not-allowed' : 'pointer',
+                              fontSize: '0.82rem', fontWeight: 600, opacity: (busy || !previous) ? 0.4 : 1,
+                              background: 'rgba(230,169,60,0.1)', color: 'var(--color-warning)',
+                              border: '1px solid rgba(230,169,60,0.3)'
+                            }}
+                          >
+                            <Undo2 size={15} /> Rollback
+                          </button>
+                        </div>
+                        <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+                          Updates are HMAC-SHA256 signed; the device verifies the signature before applying and rejects forged images.
+                        </p>
+                      </div>
+                    );
+                  })()}
+
                   <div style={{ marginTop: '16px', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '16px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <label style={{ fontSize: '0.85rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>

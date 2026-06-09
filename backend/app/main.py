@@ -5,7 +5,7 @@ import asyncio
 import json
 
 from app.database import init_db, get_db
-from app.routers import auth, devices, alerts, compliance, threat_intel, ml_models, simulation
+from app.routers import auth, devices, alerts, compliance, threat_intel, ml_models, simulation, firmware
 from app.ws_manager import ws_manager
 from app.kafka_client import consume_kafka_alerts
 from app.mqtt_client import run_mqtt_bridge
@@ -31,6 +31,7 @@ app.include_router(compliance.router)
 app.include_router(threat_intel.router)
 app.include_router(ml_models.router)
 app.include_router(simulation.router)
+app.include_router(firmware.router)
 
 
 @app.on_event("startup")

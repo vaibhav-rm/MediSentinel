@@ -353,6 +353,28 @@ export const useStore = () => {
     setDevices(prev => prev.map(d => d.device_id === deviceId ? { ...d, status: 'quarantined' } : d));
   };
 
+  // Push a secure (HMAC-signed) firmware update to a device.
+  const updateFirmware = async (deviceId: string, version: string) => {
+    try {
+      const res = await fetch(`${BACKEND_REST_URL}/firmware/${deviceId}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version })
+      });
+      if (!res.ok) console.error('Firmware update failed', await res.text());
+    } catch (err) { console.error(err); }
+  };
+
+  // Roll a device back to its previous known-good firmware version.
+  const rollbackFirmware = async (deviceId: string) => {
+    try {
+      const res = await fetch(`${BACKEND_REST_URL}/firmware/${deviceId}/rollback`, {
+        method: 'POST'
+      });
+      if (!res.ok) console.error('Firmware rollback failed', await res.text());
+    } catch (err) { console.error(err); }
+  };
+
   const escalateIncident = async (alertId: number) => {
     try {
       await fetch(`${BACKEND_REST_URL}/simulation/log`, {
@@ -939,9 +961,20 @@ export const useStore = () => {
                   heart_rate: data.heart_rate !== undefined ? data.heart_rate : d.metadata_json?.heart_rate,
                   spo2: data.spo2 !== undefined ? data.spo2 : d.metadata_json?.spo2,
                   battery_level: data.battery_level !== undefined ? data.battery_level : d.metadata_json?.battery_level,
-                  network: data.network !== undefined ? data.network : d.metadata_json?.network
+                  network: data.network !== undefined ? data.network : d.metadata_json?.network,
+                  firmware: data.firmware !== undefined
+                    ? { ...(d.metadata_json?.firmware || {}), version: data.firmware }
+                    : d.metadata_json?.firmware
                 }
               }
+              : d
+          ));
+        }
+        else if (topic === 'devices/firmware') {
+          // Authoritative firmware state (update/rollback/ACK) from the backend.
+          setDevices(prev => prev.map(d =>
+            d.device_id === data.device_id
+              ? { ...d, metadata_json: { ...d.metadata_json, firmware: data.firmware } }
               : d
           ));
         }
@@ -1010,6 +1043,8 @@ export const useStore = () => {
     toggleAttack,
     resetSimulation,
     forceQuarantine,
+    updateFirmware,
+    rollbackFirmware,
     escalateIncident,
     loading,
     attackType,

@@ -11,6 +11,8 @@
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 
+#include "mbedtls/md.h"   // HMAC-SHA256 for secure firmware update verification
+
 // =====================================================
 // FORWARD DECLARATIONS
 // =====================================================
@@ -20,6 +22,8 @@ void updateStatus(const char* status, uint16_t color);
 void updateLog(const char* logMsg, uint16_t color);
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void printWrappedText(int startX, int startY, int maxCharsPerLine, int maxLines, const char* text);
+String computeHMAC(const String& message);
+void publishFirmwareAck(const char* version, const char* status);
 
 // =====================================================
 // WIFI & MQTT  ---  EDIT THESE FOR YOUR NETWORK
@@ -39,6 +43,12 @@ const char* device_id = "esp32-hr-sim-001";
 const char* mqtt_topic_telemetry = "medisentinel/iot/telemetry";
 const char* mqtt_topic_discovery = "medisentinel/iot/discovery";
 const char* mqtt_topic_toggle = "medisentinel/iot/attack/toggle";
+const char* mqtt_topic_fw_ack  = "medisentinel/iot/firmware/ack";
+
+// Shared HMAC key for verifying secure firmware updates — MUST match the backend
+// FIRMWARE_SIGNING_KEY. The device only applies an image whose signature it can
+// recompute, so forged/unauthorized firmware pushes are rejected.
+const char* FW_SIGN_KEY = "medisentinel_fw_signing_key_2026";
 
 // =====================================================
 // TFT PINS
@@ -64,6 +74,10 @@ volatile bool beatDetected = false;
 bool isQuarantined = false;
 bool sensorAvailable = false;
 bool attackSimulationActive = false;
+
+// Secure firmware update / rollback state
+char firmwareVersion[16] = "v1.0.0";
+char firmwarePrev[16] = "";
 
 // UI State
 float lastHR = -1;
@@ -222,6 +236,40 @@ void updateLog(const char* logMsg, uint16_t color) {
 }
 
 // =====================================================
+// SECURE FIRMWARE HELPERS
+// =====================================================
+
+// HMAC-SHA256(message) using the shared FW_SIGN_KEY, returned as lowercase hex.
+String computeHMAC(const String& message) {
+    byte hmacResult[32];
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+    mbedtls_md_hmac_starts(&ctx, (const unsigned char*)FW_SIGN_KEY, strlen(FW_SIGN_KEY));
+    mbedtls_md_hmac_update(&ctx, (const unsigned char*)message.c_str(), message.length());
+    mbedtls_md_hmac_finish(&ctx, hmacResult);
+    mbedtls_md_free(&ctx);
+
+    String hex = "";
+    for (int i = 0; i < 32; i++) {
+        char b[3];
+        sprintf(b, "%02x", hmacResult[i]);
+        hex += b;
+    }
+    return hex;
+}
+
+void publishFirmwareAck(const char* version, const char* status) {
+    StaticJsonDocument<192> ack;
+    ack["device_id"] = device_id;
+    ack["version"] = version;
+    ack["status"] = status;
+    char buffer[192];
+    serializeJson(ack, buffer);
+    client.publish(mqtt_topic_fw_ack, buffer);
+}
+
+// =====================================================
 // MQTT CALLBACK
 // =====================================================
 
@@ -245,7 +293,39 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             }
         } 
         else if (strcmp(topic, "medisentinel/iot/control/esp32-hr-sim-001") == 0) {
-            if (doc.containsKey("agent_name")) {
+            if (doc.containsKey("action")) {
+                // ---- Secure firmware update / rollback ----
+                const char* action = doc["action"];
+                const char* version = doc["version"] | "";
+                const char* sig = doc["signature"] | "";
+
+                // Verify the HMAC signature before trusting the image.
+                String expected = computeHMAC(String(device_id) + ":" + String(version));
+                if (expected != String(sig)) {
+                    updateLog("Firmware REJECTED: invalid signature", ST77XX_RED);
+                    publishFirmwareAck(version, "rejected");
+                    return;
+                }
+
+                if (strcmp(action, "firmware_update") == 0) {
+                    strncpy(firmwarePrev, firmwareVersion, sizeof(firmwarePrev) - 1);
+                    firmwarePrev[sizeof(firmwarePrev) - 1] = '\0';
+                    strncpy(firmwareVersion, version, sizeof(firmwareVersion) - 1);
+                    firmwareVersion[sizeof(firmwareVersion) - 1] = '\0';
+                    char buf[40];
+                    snprintf(buf, sizeof(buf), "Secure update applied: %s", firmwareVersion);
+                    updateLog(buf, ST77XX_GREEN);
+                    publishFirmwareAck(firmwareVersion, "applied");
+                } else if (strcmp(action, "firmware_rollback") == 0) {
+                    strncpy(firmwareVersion, version, sizeof(firmwareVersion) - 1);
+                    firmwareVersion[sizeof(firmwareVersion) - 1] = '\0';
+                    char buf[40];
+                    snprintf(buf, sizeof(buf), "Rolled back to: %s", firmwareVersion);
+                    updateLog(buf, ST77XX_ORANGE);
+                    publishFirmwareAck(firmwareVersion, "rolled_back");
+                }
+            }
+            else if (doc.containsKey("agent_name")) {
                 const char* status = doc["status"];
                 const char* msg = doc["message"];
                 
@@ -320,6 +400,7 @@ void reconnect() {
         doc["device_id"] = device_id;
         doc["device_type"] = "HeartRateMonitor";
         doc["status"] = "online";
+        doc["firmware"] = firmwareVersion;
         char buffer[256];
         serializeJson(doc, buffer);
         
@@ -436,12 +517,13 @@ void loop() {
         // telemetry echoed back on the bus, which would show another source's value).
         updateVitals(hr, spo2);
 
-        StaticJsonDocument<256> doc;
+        StaticJsonDocument<384> doc;
         doc["device_id"] = device_id;
         doc["heart_rate"] = hr;
         doc["spo2"] = spo2;
         doc["timestamp"] = millis();
-        
+        doc["firmware"] = firmwareVersion;
+
         JsonObject network = doc.createNestedObject("network");
         network["packet_rate"] = attackSimulationActive ? 130 : 15;
         network["byte_rate"] = attackSimulationActive ? 14000 : 1300;
