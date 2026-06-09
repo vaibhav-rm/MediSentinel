@@ -1,19 +1,25 @@
 """
-Secure firmware update & rollback for IoMT devices.
+Real over-the-air (OTA) firmware update & rollback for IoMT devices.
 
-Flow: dashboard -> backend (HMAC-SHA256 signs "device_id:version") -> MQTT control
--> device verifies the signature with the shared key before applying -> device ACKs
--> backend confirms DB state. A previous version is retained so an update can be
-rolled back to the last known-good firmware.
+- Operators upload signed firmware .bin images to the backend store.
+- /update and /rollback send the device an HTTP URL for the target image plus an
+  HMAC-SHA256 signature over "device_id:version:url". The ESP32 verifies the
+  signature, downloads the image with HTTPUpdate, flashes it to its OTA partition,
+  and reboots into the new firmware.
+- After reboot the device reports its running version (discovery/telemetry); the
+  backend syncs DB state to that ground truth. Rollback re-flashes the previous
+  image, so it works for any stored version.
 """
 import os
+import io
 import json
 import hmac
 import hashlib
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -26,22 +32,46 @@ from app.ws_manager import ws_manager
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/firmware", tags=["Firmware"])
 
-# Shared signing secret — MUST match the key compiled into the ESP32 firmware.
+# Shared signing secret — MUST match the ESP32 FW_SIGN_KEY.
 FW_SIGNING_KEY = os.getenv("FIRMWARE_SIGNING_KEY", "medisentinel_fw_signing_key_2026")
+# Base URL the DEVICE uses to download images (must be reachable from the device's
+# LAN — i.e. the Docker host's IP, not localhost).
+OTA_BASE_URL = os.getenv("OTA_BASE_URL", "http://192.168.0.124:8000")
 CONTROL_TOPIC = "medisentinel/iot/control/{}"
 
+FIRMWARE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "firmware_images"))
+REGISTRY_PATH = os.path.join(FIRMWARE_DIR, "registry.json")
+os.makedirs(FIRMWARE_DIR, exist_ok=True)
 
-class FirmwareUpdate(BaseModel):
-    version: str
+
+# ── Image registry (global catalogue of uploaded versions) ──────────────────
+def _load_registry() -> dict:
+    if not os.path.exists(REGISTRY_PATH):
+        return {"versions": {}}
+    try:
+        with open(REGISTRY_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {"versions": {}}
 
 
-def sign_firmware(device_id: str, version: str) -> str:
-    """HMAC-SHA256 over 'device_id:version' — the device recomputes this and only
-    applies the update if the signatures match (rejects forged/unauthorized images)."""
-    msg = f"{device_id}:{version}".encode()
+def _save_registry(reg: dict):
+    with open(REGISTRY_PATH, "w") as f:
+        json.dump(reg, f, indent=2)
+
+
+def _image_url(version: str) -> str:
+    return f"{OTA_BASE_URL.rstrip('/')}/firmware/image/{version}"
+
+
+def sign_command(device_id: str, version: str, url: str) -> str:
+    """HMAC-SHA256 over 'device_id:version:url' — authorises the OTA command so the
+    device rejects forged update pushes."""
+    msg = f"{device_id}:{version}:{url}".encode()
     return hmac.new(FW_SIGNING_KEY.encode(), msg, hashlib.sha256).hexdigest()
 
 
+# ── Per-device firmware state (in Device.metadata_json) ─────────────────────
 def _get_fw(device: DBDevice) -> dict:
     md = device.metadata_json or {}
     fw = md.get("firmware") or {}
@@ -55,18 +85,17 @@ def _get_fw(device: DBDevice) -> dict:
 
 
 async def _save_fw(db: AsyncSession, device: DBDevice, fw: dict):
-    # Reassign metadata_json (JSON column) so SQLAlchemy detects the change.
     md = dict(device.metadata_json or {})
     md["firmware"] = fw
     device.metadata_json = md
     await db.commit()
 
 
-async def _broadcast(device_id: str, fw: dict, ack: str | None = None):
-    payload = {"topic": "devices/firmware", "data": {"device_id": device_id, "firmware": fw}}
-    if ack:
-        payload["data"]["ack"] = ack
-    await ws_manager.broadcast(json.dumps(payload))
+async def _broadcast(device_id: str, fw: dict, event: str | None = None):
+    data = {"device_id": device_id, "firmware": fw, "versions": list(_load_registry()["versions"].keys())}
+    if event:
+        data["event"] = event
+    await ws_manager.broadcast(json.dumps({"topic": "devices/firmware", "data": data}))
 
 
 async def _require_device(db: AsyncSession, device_id: str) -> DBDevice:
@@ -77,38 +106,88 @@ async def _require_device(db: AsyncSession, device_id: str) -> DBDevice:
     return device
 
 
+class FirmwareUpdate(BaseModel):
+    version: str
+
+
+# ── Endpoints ───────────────────────────────────────────────────────────────
+@router.get("/versions")
+async def list_versions():
+    reg = _load_registry()
+    return [{"version": v, **meta} for v, meta in sorted(reg["versions"].items())]
+
+
+@router.get("/image/{version}")
+async def get_image(version: str):
+    reg = _load_registry()
+    meta = reg["versions"].get(version)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Unknown firmware version")
+    path = os.path.join(FIRMWARE_DIR, meta["file"])
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Image file missing")
+    return FileResponse(path, media_type="application/octet-stream", filename=meta["file"])
+
+
+@router.post("/upload")
+async def upload_image(version: str = Form(...), file: UploadFile = File(...)):
+    version = version.strip()
+    if not version:
+        raise HTTPException(status_code=400, detail="version is required")
+    data = await file.read()
+    if len(data) < 1000 or data[0] != 0xE9:  # ESP32 app image magic byte
+        raise HTTPException(status_code=400, detail="Not a valid ESP32 firmware image (.bin)")
+    filename = f"{version}.bin"
+    with open(os.path.join(FIRMWARE_DIR, filename), "wb") as f:
+        f.write(data)
+    reg = _load_registry()
+    reg["versions"][version] = {
+        "file": filename,
+        "md5": hashlib.md5(data).hexdigest(),
+        "size": len(data),
+        "uploaded_at": datetime.utcnow().isoformat() + "Z",
+    }
+    _save_registry(reg)
+    logger.info(f"Firmware image uploaded: {version} ({len(data)} bytes)")
+    return {"status": "stored", "version": version, "size": len(data), "md5": reg["versions"][version]["md5"]}
+
+
 @router.get("/{device_id}")
 async def get_firmware(device_id: str, db: AsyncSession = Depends(get_db)):
     device = await _require_device(db, device_id)
-    return _get_fw(device)
+    fw = _get_fw(device)
+    fw["available"] = [{"version": v, **m} for v, m in sorted(_load_registry()["versions"].items())]
+    return fw
 
 
 @router.post("/{device_id}/update")
 async def update_firmware(device_id: str, payload: FirmwareUpdate, db: AsyncSession = Depends(get_db)):
     device = await _require_device(db, device_id)
     fw = _get_fw(device)
-    new_version = payload.version.strip()
-    if not new_version:
-        raise HTTPException(status_code=400, detail="version is required")
-    if new_version == fw["version"]:
+    version = payload.version.strip()
+    reg = _load_registry()
+    if version not in reg["versions"]:
+        raise HTTPException(status_code=400, detail=f"No uploaded image for {version}")
+    if version == fw["version"]:
         raise HTTPException(status_code=400, detail="Device already runs that version")
 
-    signature = sign_firmware(device_id, new_version)
+    url = _image_url(version)
+    signature = sign_command(device_id, version, url)
     fw["previous"] = fw["version"]
     fw["status"] = "updating"
-    fw["target"] = new_version
+    fw["target"] = version
     fw["history"] = (fw.get("history") or [])[-9:] + [{
-        "action": "update", "from": fw["version"], "to": new_version,
+        "action": "update", "from": fw["version"], "to": version,
         "at": datetime.utcnow().isoformat() + "Z",
     }]
     await _save_fw(db, device, fw)
 
     publish_mqtt_message(CONTROL_TOPIC.format(device_id), {
-        "action": "firmware_update", "version": new_version, "signature": signature,
+        "action": "firmware_update", "version": version, "url": url, "signature": signature,
     })
-    await _broadcast(device_id, fw)
-    logger.info(f"Firmware update dispatched to {device_id}: {fw['previous']} -> {new_version}")
-    return {"status": "dispatched", "version": new_version}
+    await _broadcast(device_id, fw, event="update_dispatched")
+    logger.info(f"OTA update dispatched to {device_id}: {fw['previous']} -> {version} ({url})")
+    return {"status": "dispatched", "version": version, "url": url}
 
 
 @router.post("/{device_id}/rollback")
@@ -118,8 +197,12 @@ async def rollback_firmware(device_id: str, db: AsyncSession = Depends(get_db)):
     prev = fw.get("previous")
     if not prev:
         raise HTTPException(status_code=400, detail="No previous firmware version to roll back to")
+    reg = _load_registry()
+    if prev not in reg["versions"]:
+        raise HTTPException(status_code=400, detail=f"Previous image {prev} is no longer in the store")
 
-    signature = sign_firmware(device_id, prev)
+    url = _image_url(prev)
+    signature = sign_command(device_id, prev, url)
     fw["status"] = "rolling_back"
     fw["target"] = prev
     fw["history"] = (fw.get("history") or [])[-9:] + [{
@@ -129,18 +212,19 @@ async def rollback_firmware(device_id: str, db: AsyncSession = Depends(get_db)):
     await _save_fw(db, device, fw)
 
     publish_mqtt_message(CONTROL_TOPIC.format(device_id), {
-        "action": "firmware_rollback", "version": prev, "signature": signature,
+        "action": "firmware_rollback", "version": prev, "url": url, "signature": signature,
     })
-    await _broadcast(device_id, fw)
-    logger.info(f"Firmware rollback dispatched to {device_id}: -> {prev}")
-    return {"status": "dispatched", "version": prev}
+    await _broadcast(device_id, fw, event="rollback_dispatched")
+    logger.info(f"OTA rollback dispatched to {device_id}: -> {prev} ({url})")
+    return {"status": "dispatched", "version": prev, "url": url}
 
 
-async def handle_firmware_ack(payload: dict):
-    """Called from the MQTT bridge when a device confirms it applied/rejected an image."""
-    device_id = payload.get("device_id")
-    version = payload.get("version")
-    status = payload.get("status")  # applied | rejected | rolled_back
+# ── Device feedback ─────────────────────────────────────────────────────────
+async def sync_reported_version(device_id: str, reported: str):
+    """Device reported its running version (discovery/telemetry). After a successful
+    OTA reboot this is how we confirm the new image is live."""
+    if not reported:
+        return
     from app.database import AsyncSessionLocal
     async with AsyncSessionLocal() as session:
         res = await session.execute(select(DBDevice).where(DBDevice.device_id == device_id))
@@ -148,14 +232,36 @@ async def handle_firmware_ack(payload: dict):
         if not device:
             return
         fw = _get_fw(device)
-        if status in ("applied", "rolled_back"):
-            fw["version"] = version or fw.get("target") or fw["version"]
+        if reported == fw["version"] and fw["status"] not in ("updating", "rolling_back"):
+            return  # nothing changed
+        changed = reported != fw["version"]
+        fw["version"] = reported
+        if fw.get("target") == reported:
             fw["status"] = "stable"
             fw["target"] = None
-        elif status == "rejected":
-            # Image was rejected (bad signature) — revert optimistic state.
-            fw["status"] = "rejected"
+        elif changed:
+            fw["status"] = "stable"
+        await _save_fw(session, device, fw)
+        await _broadcast(device_id, fw, event="version_reported")
+        logger.info(f"Device {device_id} reports running firmware {reported}")
+
+
+async def handle_firmware_ack(payload: dict):
+    """Device-side ACK for failures/rejections (success is confirmed by the post-reboot
+    version report)."""
+    device_id = payload.get("device_id")
+    version = payload.get("version")
+    status = payload.get("status")  # rejected | failed
+    from app.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(DBDevice).where(DBDevice.device_id == device_id))
+        device = res.scalars().first()
+        if not device:
+            return
+        fw = _get_fw(device)
+        if status in ("rejected", "failed"):
+            fw["status"] = status
             fw["target"] = None
         await _save_fw(session, device, fw)
-        await _broadcast(device_id, fw, ack=status)
+        await _broadcast(device_id, fw, event=status)
         logger.info(f"Firmware ACK from {device_id}: {status} (version {version})")

@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
-import { Map as MapIcon, Info, HeartPulse, Activity, AlertTriangle, ShieldCheck, Cpu, UploadCloud, Undo2, Lock } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Map as MapIcon, Info, HeartPulse, Activity, AlertTriangle, ShieldCheck, Cpu, UploadCloud, Undo2, Lock, FileUp, CheckCircle2 } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
 import { useStore } from '../useStore';
 import type { Device } from '../types';
+
+const BACKEND_REST_URL = 'http://localhost:8000';
 
 const DEPARTMENTS = [
   { id: 'icu', name: 'Intensive Care Unit (ICU)' },
@@ -23,11 +25,34 @@ const IoTMap: React.FC = () => {
   } = useStore();
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
 
-  // Bump the minor component of a semantic version (v1.0.0 -> v1.1.0).
-  const nextVersion = (v: string) => {
-    const m = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(v || 'v1.0.0');
-    if (!m) return 'v1.1.0';
-    return `v${m[1]}.${Number(m[2]) + 1}.0`;
+  // Available OTA images in the backend store.
+  const [fwVersions, setFwVersions] = useState<{ version: string; size: number; md5: string }[]>([]);
+  const [uploadVer, setUploadVer] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const refreshVersions = async () => {
+    try {
+      const r = await fetch(`${BACKEND_REST_URL}/firmware/versions`);
+      if (r.ok) setFwVersions(await r.json());
+    } catch { /* backend not ready */ }
+  };
+  useEffect(() => { refreshVersions(); }, []);
+
+  const doUpload = async () => {
+    const f = fileRef.current?.files?.[0];
+    if (!f || !uploadVer.trim()) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('version', uploadVer.trim());
+      fd.append('file', f);
+      const r = await fetch(`${BACKEND_REST_URL}/firmware/upload`, { method: 'POST', body: fd });
+      if (!r.ok) console.error('upload failed', await r.text());
+      setUploadVer('');
+      if (fileRef.current) fileRef.current.value = '';
+      await refreshVersions();
+    } finally { setUploading(false); }
   };
 
   // Distribute devices among departments deterministically for demo
@@ -270,7 +295,7 @@ const IoTMap: React.FC = () => {
                     </div>
                   </div>
                   
-                  {/* Secure Firmware Update & Rollback */}
+                  {/* Real OTA: Secure Firmware Update & Rollback */}
                   {(() => {
                     const fw = activeDevice.metadata_json?.firmware || {};
                     const version = fw.version || 'v1.0.0';
@@ -278,62 +303,108 @@ const IoTMap: React.FC = () => {
                     const fwStatus = fw.status || 'stable';
                     const busy = fwStatus === 'updating' || fwStatus === 'rolling_back';
                     const statusColor =
-                      fwStatus === 'rejected' ? 'var(--color-accent)'
+                      (fwStatus === 'rejected' || fwStatus === 'failed') ? 'var(--color-accent)'
                         : busy ? 'var(--color-warning)'
                           : 'var(--color-success)';
                     return (
                       <div style={{ marginTop: '8px', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '16px' }}>
                         <label style={{ fontSize: '0.85rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '12px' }}>
-                          <Lock size={14} /> Secure Firmware (HMAC-signed)
+                          <Lock size={14} /> Secure OTA Firmware
                         </label>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
                           <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Running version</span>
                           <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{version}</span>
                         </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                           <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Status</span>
                           <span style={{ fontSize: '0.8rem', fontWeight: 600, color: statusColor, textTransform: 'capitalize' }}>
-                            {busy ? `${fwStatus.replace('_', ' ')}…` : fwStatus}
+                            {busy ? `${fwStatus.replace('_', ' ')}… (downloading + flashing)` : fwStatus}
                           </span>
                         </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Rollback target</span>
-                          <span style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: previous ? 'var(--text-main)' : 'var(--text-muted)' }}>
-                            {previous || '—'}
-                          </span>
+
+                        {/* Available images -> flash a specific version (real OTA) */}
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '6px' }}>Available images</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
+                          {fwVersions.length === 0 && (
+                            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No images uploaded yet.</div>
+                          )}
+                          {fwVersions.map(img => {
+                            const isRunning = img.version === version;
+                            return (
+                              <div key={img.version} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '7px', padding: '7px 10px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                                  <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{img.version}</span>
+                                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{(img.size / 1024).toFixed(0)} KB</span>
+                                </div>
+                                {isRunning ? (
+                                  <span style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.74rem', color: 'var(--color-success)', fontWeight: 600 }}>
+                                    <CheckCircle2 size={13} /> Running
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => updateFirmware(activeDevice.device_id, img.version)}
+                                    disabled={busy}
+                                    style={{
+                                      display: 'flex', alignItems: 'center', gap: '5px', padding: '5px 11px',
+                                      borderRadius: '6px', cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.5 : 1,
+                                      fontSize: '0.76rem', fontWeight: 600,
+                                      background: 'var(--color-primary-soft)', color: 'var(--color-primary)',
+                                      border: '1px solid rgba(90,144,240,0.35)'
+                                    }}
+                                  >
+                                    <UploadCloud size={13} /> Flash
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
-                        <div style={{ display: 'flex', gap: '10px' }}>
-                          <button
-                            onClick={() => updateFirmware(activeDevice.device_id, nextVersion(version))}
-                            disabled={busy}
-                            style={{
-                              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                              padding: '9px', borderRadius: '8px', cursor: busy ? 'not-allowed' : 'pointer',
-                              fontSize: '0.82rem', fontWeight: 600, opacity: busy ? 0.5 : 1,
-                              background: 'var(--color-primary-soft)', color: 'var(--color-primary)',
-                              border: '1px solid rgba(90,144,240,0.35)'
-                            }}
-                          >
-                            <UploadCloud size={15} /> Push Update → {nextVersion(version)}
-                          </button>
-                          <button
-                            onClick={() => rollbackFirmware(activeDevice.device_id)}
-                            disabled={busy || !previous}
-                            title={previous ? `Roll back to ${previous}` : 'No previous version'}
-                            style={{
-                              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                              padding: '9px 14px', borderRadius: '8px',
-                              cursor: (busy || !previous) ? 'not-allowed' : 'pointer',
-                              fontSize: '0.82rem', fontWeight: 600, opacity: (busy || !previous) ? 0.4 : 1,
-                              background: 'rgba(230,169,60,0.1)', color: 'var(--color-warning)',
-                              border: '1px solid rgba(230,169,60,0.3)'
-                            }}
-                          >
-                            <Undo2 size={15} /> Rollback
-                          </button>
+
+                        <button
+                          onClick={() => rollbackFirmware(activeDevice.device_id)}
+                          disabled={busy || !previous}
+                          title={previous ? `Roll back to ${previous}` : 'No previous version'}
+                          style={{
+                            width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                            padding: '9px', borderRadius: '8px', marginBottom: '14px',
+                            cursor: (busy || !previous) ? 'not-allowed' : 'pointer', opacity: (busy || !previous) ? 0.4 : 1,
+                            fontSize: '0.82rem', fontWeight: 600,
+                            background: 'rgba(230,169,60,0.1)', color: 'var(--color-warning)',
+                            border: '1px solid rgba(230,169,60,0.3)'
+                          }}
+                        >
+                          <Undo2 size={15} /> Rollback{previous ? ` → ${previous}` : ''}
+                        </button>
+
+                        {/* Upload a new image */}
+                        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '12px' }}>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <FileUp size={13} /> Upload new firmware image (.bin)
+                          </div>
+                          <input ref={fileRef} type="file" accept=".bin" style={{ fontSize: '0.74rem', color: 'var(--text-muted)', width: '100%', marginBottom: '8px' }} />
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <input
+                              value={uploadVer}
+                              onChange={e => setUploadVer(e.target.value)}
+                              placeholder="version e.g. v1.3.0"
+                              style={{ flex: 1, background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', padding: '7px 10px', color: 'var(--text-main)', fontSize: '0.78rem', outline: 'none' }}
+                            />
+                            <button
+                              onClick={doUpload}
+                              disabled={uploading || !uploadVer.trim()}
+                              style={{
+                                padding: '7px 14px', borderRadius: '6px', fontSize: '0.78rem', fontWeight: 600,
+                                cursor: (uploading || !uploadVer.trim()) ? 'not-allowed' : 'pointer', opacity: (uploading || !uploadVer.trim()) ? 0.5 : 1,
+                                background: 'var(--bg-panel-hover)', color: 'var(--text-primary)', border: '1px solid var(--bg-panel-border-strong)'
+                              }}
+                            >
+                              {uploading ? 'Uploading…' : 'Upload'}
+                            </button>
+                          </div>
                         </div>
-                        <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '8px' }}>
-                          Updates are HMAC-SHA256 signed; the device verifies the signature before applying and rejects forged images.
+
+                        <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '10px' }}>
+                          Real OTA: the device downloads the selected image over HTTP, verifies the HMAC-SHA256 signature, flashes it to its OTA partition and reboots. Forged/unsigned images are rejected.
                         </p>
                       </div>
                     );

@@ -121,6 +121,10 @@ services:
       - SECRET_KEY=${SECRET_KEY:-medisentinel_super_secret_key_change_in_prod}
       - DATABASE_URL=postgresql+asyncpg://medi_user:medi_password@postgres:5432/medisentinel
       - REDIS_URL=redis://redis:6379/0
+      # Base URL the ESP32 uses to DOWNLOAD OTA images — must be the Docker host's
+      # LAN IP (same network as the device), not localhost.
+      - OTA_BASE_URL=${OTA_BASE_URL:-http://192.168.0.124:8000}
+      - FIRMWARE_SIGNING_KEY=${FIRMWARE_SIGNING_KEY:-medisentinel_fw_signing_key_2026}
     volumes:
       - ./backend:/app
     networks:

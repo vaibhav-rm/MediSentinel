@@ -2,7 +2,13 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <HTTPUpdate.h>   // real OTA: download + flash firmware image
 #include "MAX30100_PulseOximeter.h"
+
+// Firmware version — set per build via platformio build_flags (-DFW_VERSION=...).
+#ifndef FW_VERSION
+#define FW_VERSION "v1.0.0"
+#endif
 
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
@@ -24,6 +30,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length);
 void printWrappedText(int startX, int startY, int maxCharsPerLine, int maxLines, const char* text);
 String computeHMAC(const String& message);
 void publishFirmwareAck(const char* version, const char* status);
+void performOTA(const char* version, const char* url, bool isRollback);
 
 // =====================================================
 // WIFI & MQTT  ---  EDIT THESE FOR YOUR NETWORK
@@ -75,9 +82,8 @@ bool isQuarantined = false;
 bool sensorAvailable = false;
 bool attackSimulationActive = false;
 
-// Secure firmware update / rollback state
-char firmwareVersion[16] = "v1.0.0";
-char firmwarePrev[16] = "";
+// Running firmware version (compiled in; changes after a real OTA reboot).
+char firmwareVersion[16] = FW_VERSION;
 
 // UI State
 float lastHR = -1;
@@ -106,10 +112,11 @@ void drawUI() {
     
     // Header
     tft.fillRect(0, 0, 160, 16, ST77XX_BLUE);
-    tft.setCursor(15, 4);
+    tft.setCursor(6, 4);
     tft.setTextColor(ST77XX_WHITE);
     tft.setTextSize(1);
-    tft.println("MediSentinel Shield");
+    tft.print("MediSentinel ");
+    tft.print(firmwareVersion);
 
     // Dividers
     tft.drawLine(0, 16, 160, 16, ST77XX_WHITE);
@@ -269,6 +276,33 @@ void publishFirmwareAck(const char* version, const char* status) {
     client.publish(mqtt_topic_fw_ack, buffer);
 }
 
+// Download the firmware image from `url` over HTTP and flash it to the inactive OTA
+// partition. On success the ESP32 reboots into the new image automatically; on the
+// next boot it reports the new FW_VERSION (which confirms the update to the backend).
+void performOTA(const char* version, const char* url, bool isRollback) {
+    char buf[56];
+    snprintf(buf, sizeof(buf), "%s -> %s", isRollback ? "Rollback" : "OTA update", version);
+    updateStatus(isRollback ? "ROLLING BACK" : "UPDATING FW", ST77XX_CYAN);
+    updateLog(buf, ST77XX_CYAN);
+    updateLog("Downloading & flashing image...", ST77XX_CYAN);
+
+    WiFiClient otaClient;
+    httpUpdate.rebootOnUpdate(true);
+    t_httpUpdate_return ret = httpUpdate.update(otaClient, String(url));
+
+    // Only reached on failure (a successful flash reboots into the new firmware).
+    if (ret == HTTP_UPDATE_FAILED) {
+        char err[64];
+        snprintf(err, sizeof(err), "OTA FAILED: %s", httpUpdate.getLastErrorString().c_str());
+        updateStatus("OTA FAILED", ST77XX_RED);
+        updateLog(err, ST77XX_RED);
+        publishFirmwareAck(version, "failed");
+    } else if (ret == HTTP_UPDATE_NO_UPDATES) {
+        updateLog("OTA: no update returned by server", ST77XX_ORANGE);
+        publishFirmwareAck(version, "failed");
+    }
+}
+
 // =====================================================
 // MQTT CALLBACK
 // =====================================================
@@ -294,36 +328,25 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         } 
         else if (strcmp(topic, "medisentinel/iot/control/esp32-hr-sim-001") == 0) {
             if (doc.containsKey("action")) {
-                // ---- Secure firmware update / rollback ----
+                // ---- Real secure OTA: update / rollback ----
                 const char* action = doc["action"];
                 const char* version = doc["version"] | "";
+                const char* url = doc["url"] | "";
                 const char* sig = doc["signature"] | "";
 
-                // Verify the HMAC signature before trusting the image.
-                String expected = computeHMAC(String(device_id) + ":" + String(version));
-                if (expected != String(sig)) {
+                if (strcmp(action, "firmware_update") != 0 && strcmp(action, "firmware_rollback") != 0) {
+                    return;
+                }
+
+                // Authorise the command: HMAC over "device_id:version:url".
+                String expected = computeHMAC(String(device_id) + ":" + String(version) + ":" + String(url));
+                if (expected != String(sig) || strlen(url) == 0) {
                     updateLog("Firmware REJECTED: invalid signature", ST77XX_RED);
                     publishFirmwareAck(version, "rejected");
                     return;
                 }
 
-                if (strcmp(action, "firmware_update") == 0) {
-                    strncpy(firmwarePrev, firmwareVersion, sizeof(firmwarePrev) - 1);
-                    firmwarePrev[sizeof(firmwarePrev) - 1] = '\0';
-                    strncpy(firmwareVersion, version, sizeof(firmwareVersion) - 1);
-                    firmwareVersion[sizeof(firmwareVersion) - 1] = '\0';
-                    char buf[40];
-                    snprintf(buf, sizeof(buf), "Secure update applied: %s", firmwareVersion);
-                    updateLog(buf, ST77XX_GREEN);
-                    publishFirmwareAck(firmwareVersion, "applied");
-                } else if (strcmp(action, "firmware_rollback") == 0) {
-                    strncpy(firmwareVersion, version, sizeof(firmwareVersion) - 1);
-                    firmwareVersion[sizeof(firmwareVersion) - 1] = '\0';
-                    char buf[40];
-                    snprintf(buf, sizeof(buf), "Rolled back to: %s", firmwareVersion);
-                    updateLog(buf, ST77XX_ORANGE);
-                    publishFirmwareAck(firmwareVersion, "rolled_back");
-                }
+                performOTA(version, url, strcmp(action, "firmware_rollback") == 0);
             }
             else if (doc.containsKey("agent_name")) {
                 const char* status = doc["status"];

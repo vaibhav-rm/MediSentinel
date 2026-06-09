@@ -81,12 +81,22 @@ def on_message(client, userdata, msg):
         # Forward everything to Kafka robustly via background task
         loop = userdata.get('loop')
         
-        # --- Firmware ACK from a device (applied / rejected / rolled_back) ---
+        # --- Firmware ACK from a device (rejected / failed) ---
         if topic == "medisentinel/iot/firmware/ack":
             if loop and loop.is_running():
                 from app.routers.firmware import handle_firmware_ack
                 asyncio.run_coroutine_threadsafe(handle_firmware_ack(payload), loop)
             return
+
+        # --- Sync the device-reported running firmware version (post-OTA reboot) ---
+        if payload.get("firmware") and (topic == "medisentinel/iot/discovery"
+                                        or topic == "medisentinel/iot/telemetry"
+                                        or topic.endswith("/data")):
+            if loop and loop.is_running():
+                from app.routers.firmware import sync_reported_version
+                asyncio.run_coroutine_threadsafe(
+                    sync_reported_version(payload.get("device_id"), payload.get("firmware")), loop
+                )
 
         # --- Auto Device Registration Logic ---
         if topic.endswith("/status") or topic == "medisentinel/iot/discovery":
