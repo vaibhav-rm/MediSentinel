@@ -2,14 +2,25 @@ import React, { useState, useEffect, useRef } from 'react';
 import { FileCheck, Shield, Lock, Download, AlertTriangle, ShieldCheck, Cpu } from 'lucide-react';
 import { useStore } from '../useStore';
 
+const BACKEND_REST_URL = 'http://localhost:8000';
+
+interface LedgerBlock {
+  id: number;
+  hipaa: string;
+  hash: string;
+  prevHash: string;
+  timestamp: string;
+  status: string;
+}
+
 const ComplianceCenter: React.FC = () => {
-  const { 
-    attackActive, 
-    complianceMetrics, 
-    agent5Logs 
+  const {
+    attackActive,
+    agent5Logs
   } = useStore();
   const [verifying, setVerifying] = useState(false);
   const [verifyStatus, setVerifyStatus] = useState<string | null>(null);
+  const [blocks, setBlocks] = useState<LedgerBlock[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // Auto scroll logs without page jump
@@ -19,13 +30,36 @@ const ComplianceCenter: React.FC = () => {
     }
   }, [agent5Logs]);
 
-  const handleVerifyChain = () => {
+  // Poll the REAL cryptographic ledger from the backend (it grows on fixed
+  // intervals via Agent 5, plus a block per security incident).
+  useEffect(() => {
+    let active = true;
+    const fetchLedger = async () => {
+      try {
+        const res = await fetch(`${BACKEND_REST_URL}/compliance/audit-logs?limit=25`);
+        if (res.ok && active) {
+          const data = await res.json();
+          setBlocks(Array.isArray(data) ? data : []);
+        }
+      } catch { /* backend not ready yet */ }
+    };
+    fetchLedger();
+    const id = setInterval(fetchLedger, 5000);
+    return () => { active = false; clearInterval(id); };
+  }, []);
+
+  const handleVerifyChain = async () => {
     setVerifying(true);
     setVerifyStatus(null);
-    setTimeout(() => {
+    try {
+      const res = await fetch(`${BACKEND_REST_URL}/compliance/verify-chain`);
+      const data = await res.json();
+      setVerifyStatus(data.status === 'valid' ? 'Valid' : 'Invalid');
+    } catch {
+      setVerifyStatus('Invalid');
+    } finally {
       setVerifying(false);
-      setVerifyStatus('Valid');
-    }, 800);
+    }
   };
 
   return (
@@ -112,27 +146,29 @@ const ComplianceCenter: React.FC = () => {
           </div>
 
           {verifyStatus && (
-            <div className="pulse-border" style={{ 
-              marginBottom: '16px', 
-              padding: '12px', 
-              background: 'rgba(0,255,136,0.1)', 
-              border: '1px solid var(--color-success)', 
-              color: 'var(--color-success)', 
+            <div className="pulse-border" style={{
+              marginBottom: '16px',
+              padding: '12px',
+              background: verifyStatus === 'Valid' ? 'rgba(0,255,136,0.1)' : 'rgba(255,0,85,0.1)',
+              border: `1px solid ${verifyStatus === 'Valid' ? 'var(--color-success)' : 'var(--color-accent)'}`,
+              color: verifyStatus === 'Valid' ? 'var(--color-success)' : 'var(--color-accent)',
               borderRadius: '4px',
               fontSize: '0.85rem',
               fontWeight: 'bold'
             }}>
-              ✓ Cryptographic hash chain validation completed. All blocks match their parents. 0 anomalies detected.
+              {verifyStatus === 'Valid'
+                ? `✓ Cryptographic hash chain validated against the backend ledger (${blocks.length} blocks). All parents match. 0 anomalies.`
+                : '✗ Hash chain verification FAILED — a block does not match its parent hash.'}
             </div>
           )}
 
           <div style={{ flexGrow: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px', maxHeight: '380px' }}>
-            {complianceMetrics.auditBlocks.length === 0 ? (
+            {blocks.length === 0 ? (
               <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '40px' }}>
                 Initializing compliance ledger node...
               </div>
             ) : (
-              complianceMetrics.auditBlocks.map((block, idx) => (
+              blocks.map((block, idx) => (
                 <div key={block.id} style={{ 
                   background: 'rgba(0,0,0,0.5)', 
                   border: '1px solid rgba(255,255,255,0.05)', 

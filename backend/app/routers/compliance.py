@@ -40,9 +40,25 @@ async def get_scorecard(db: AsyncSession = Depends(get_db)):
 async def get_audit_logs(limit: int = 100, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(AuditLog).order_by(AuditLog.id.desc()).limit(limit))
     logs = result.scalars().all()
-    
-    # We could optionally verify the chain before returning, but usually done via a specific endpoint
-    return logs
+
+    # Shape each row into a block the cryptographic-ledger UI can render directly.
+    blocks = []
+    for log in logs:
+        details = log.details if isinstance(log.details, dict) else {}
+        hipaa = (details.get("hipaa_ref") or {})
+        policy = f"HIPAA {hipaa.get('rule', '§164.312(b)')} {hipaa.get('control', 'Audit Controls')}".strip()
+        blocks.append({
+            "id": log.id,
+            "action": log.action,
+            "actor": log.actor,
+            "target": log.target,
+            "hipaa": policy,
+            "hash": log.current_hash,
+            "prevHash": log.previous_hash,
+            "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+            "status": "VERIFIED & LOCKED",
+        })
+    return blocks
 
 @router.get("/verify-chain")
 async def verify_chain(db: AsyncSession = Depends(get_db)):

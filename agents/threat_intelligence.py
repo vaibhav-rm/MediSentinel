@@ -139,6 +139,30 @@ class ThreatIntelligenceAgent:
         
         return []
     
+    def correlate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Deterministically correlate a telemetry payload against the IOC database.
+
+        Inspects any network endpoint fields (destination IP, remote host, domain)
+        and returns the matching IOC, or None. Unlike feed polling, this is a
+        deterministic O(k) lookup — the same payload always yields the same verdict,
+        so detection is driven by the data, not a random coin flip.
+        """
+        network = payload.get("network", {}) or {}
+
+        # Candidate indicators present in this payload (IPs / domains / hashes).
+        candidates = []
+        for field in ("destination_ip", "dest_ip", "remote_ip", "src_ip", "domain", "host"):
+            val = network.get(field) or payload.get(field)
+            if val:
+                candidates.append(str(val))
+
+        for indicator in candidates:
+            for ioc in self.ioc_database:
+                if ioc["indicator"] == indicator:
+                    return ioc
+        return None
+
     def get_stats(self) -> Dict[str, Any]:
         """Returns agent statistics for dashboard display."""
         return {

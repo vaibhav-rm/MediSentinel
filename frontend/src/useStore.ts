@@ -471,13 +471,8 @@ export const useStore = () => {
       const isAttacking = attackActive;
       const progress = timer * 20;
 
-      if (isAttacking && progress >= 120) {
-        toggleAttack(false);
-        timer = 0;
-        return;
-      }
-
-      // Reset logs if not attacking and timer resets
+      // The attack lifecycle is driven by the backend agents now (start/stop is a
+      // user action; recovery is decided by the model). No client-side auto-stop.
       if (!isAttacking) {
         timer = 0;
       }
@@ -727,8 +722,7 @@ export const useStore = () => {
               { time: new Date().toLocaleTimeString(), action: 'Executing dynamic VLAN isolation', status: 'COMPLETED' },
               { time: new Date().toLocaleTimeString(), action: 'Interface esp32-hr-sim-001 disabled', status: 'COMPLETED' }
             ];
-
-            setDevices(prevDevs => prevDevs.map(d => d.device_id === 'esp32-hr-sim-001' ? { ...d, status: 'quarantined' } : d));
+            // Real device status comes from the backend over WebSocket (devices/telemetry).
           }
         }
 
@@ -832,230 +826,53 @@ export const useStore = () => {
         };
       });
 
-      // 8. Dynamic Log Appending for each of the 5 agents
-      if (isAttacking) {
-        const timestamp = new Date().toLocaleTimeString();
-
-        // --- AGENT 1 LOGIC ---
-        if (attackType === 'agent1_ddos') {
-          if (progress === 20) {
-            setAgent1Logs(prev => [
-              ...prev,
-              { agent: 'Network Monitor', msg: '[ALERT] [IDENTIFICATION] High amount of packets detected (DDoS signature). Identifying malicious packets.', time: timestamp, status: 'attack' }
-            ].slice(-50));
-          }
-          else if (progress === 40) {
-            setAgent1Logs(prev => [
-              ...prev,
-              { agent: 'Network Monitor', msg: '[ACTION] [STOPPING] Isolating malicious packets. Dropping unneeded traffic and only transmitting necessary packets to secure the system.', time: timestamp, status: 'warning' }
-            ].slice(-50));
-          }
-          else if (progress === 60) {
-            setAgent1Logs(prev => [
-              ...prev,
-              { agent: 'Network Monitor', msg: '[POLICY] [PREVENTION] System secured. Rate-limiting and intelligent packet filtering active.', time: timestamp, status: 'warning' },
-              { agent: 'Network Monitor', msg: '[INFO] [SOLUTION] Permanent Solution: Configure ingress QoS queue shaping, enable syncookies on host kernel, and deploy edge DDoS scrubbers.', time: timestamp, status: 'info' }
-            ].slice(-50));
-          }
-          else if (progress === 80) {
-            setAgent1Logs(prev => [
-              ...prev,
-              { agent: 'Network Monitor', msg: '[ACTION] [SELF-HEALING] Reconstructed traffic rules. Traffic ingestion rate restored to nominal bounds (12 pkts/sec).', time: timestamp, status: 'success' }
-            ].slice(-50));
-          }
-          else if (progress === 100) {
-            setAgent1Logs(prev => [
-              ...prev,
-              { agent: 'Network Monitor', msg: '[SUCCESS] Network Monitor threat resolved. Subnet status restored to SECURE.', time: timestamp, status: 'success' }
-            ].slice(-50));
-          }
-        }
-
-        // --- AGENT 2 LOGIC ---
-        if (attackType === 'agent2_spoof') {
-          if (progress === 20) {
-            setAgent2Logs(prev => [
-              ...prev,
-              { agent: 'IoT Guardian', msg: '[ALERT] [IDENTIFICATION] Spoofed telemetry payloads detected. Identifying anomalous metrics.', time: timestamp, status: 'attack' }
-            ].slice(-50));
-          }
-          else if (progress === 40) {
-            setAgent2Logs(prev => [
-              ...prev,
-              { agent: 'IoT Guardian', msg: '[ACTION] [STOPPING] Preventing spoofed data transmission. Isolating device and rejecting mutated telemetry to secure the system.', time: timestamp, status: 'warning' }
-            ].slice(-50));
-          }
-          else if (progress === 60) {
-            setAgent2Logs(prev => [
-              ...prev,
-              { agent: 'IoT Guardian', msg: '[POLICY] [PREVENTION] System secured. Restoring legitimate telemetry stream.', time: timestamp, status: 'warning' },
-              { agent: 'IoT Guardian', msg: '[INFO] [SOLUTION] Permanent Solution: Implement cryptographically signed telemetry frames from device firmware (HMAC-SHA256) and enroll devices in mutual TLS (mTLS).', time: timestamp, status: 'info' }
-            ].slice(-50));
-          }
-          else if (progress === 80) {
-            setAgent2Logs(prev => [
-              ...prev,
-              { agent: 'IoT Guardian', msg: '[ACTION] [SELF-HEALING] Telemetry values returned within clinical bounds. Restoring device status to ACTIVE.', time: timestamp, status: 'success' }
-            ].slice(-50));
-          }
-          else if (progress === 100) {
-            setAgent2Logs(prev => [
-              ...prev,
-              { agent: 'IoT Guardian', msg: '[SUCCESS] IoT telemetry verification successful. Patient heart rate monitoring baseline is SECURE.', time: timestamp, status: 'success' }
-            ].slice(-50));
-          }
-        }
-
-        // --- AGENT 3 LOGIC ---
-        if (attackType === 'agent3_c2') {
-          if (progress === 20) {
-            setAgent3Logs(prev => [
-              ...prev,
-              { agent: 'Threat Intelligence', msg: '[ALERT] [IDENTIFICATION] C2 Beaconing detected. Identifying malicious IPs.', time: timestamp, status: 'attack' }
-            ].slice(-50));
-          }
-          else if (progress === 40) {
-            setAgent3Logs(prev => [
-              ...prev,
-              { agent: 'Threat Intelligence', msg: '[ACTION] [STOPPING] Isolating malicious communication. Dropping C2 packets and restricting to whitelisted domains to secure the system.', time: timestamp, status: 'warning' }
-            ].slice(-50));
-          }
-          else if (progress === 60) {
-            setAgent3Logs(prev => [
-              ...prev,
-              { agent: 'Threat Intelligence', msg: '[POLICY] [PREVENTION] System secured. Egress traffic filtered.', time: timestamp, status: 'warning' },
-              { agent: 'Threat Intelligence', msg: '[INFO] [SOLUTION] Permanent Solution: Configure DNS firewalls (RPZ), restrict outbound access to whitelisted medical proxy domains, and enforce zero-trust egress routing.', time: timestamp, status: 'info' }
-            ].slice(-50));
-          }
-          else if (progress === 80) {
-            setAgent3Logs(prev => [
-              ...prev,
-              { agent: 'Threat Intelligence', msg: '[ACTION] [SELF-HEALING] Egress connections verified clean. Dynamic firewall rule cleanup triggered.', time: timestamp, status: 'success' }
-            ].slice(-50));
-          }
-          else if (progress === 100) {
-            setAgent3Logs(prev => [
-              ...prev,
-              { agent: 'Threat Intelligence', msg: '[SUCCESS] C2 connection completely severed. Threat intelligence alert status cleared.', time: timestamp, status: 'success' }
-            ].slice(-50));
-          }
-        }
-
-        // --- AGENT 4 LOGIC ---
-        if (attackType === 'agent4_vlan') {
-          if (progress === 20) {
-            setAgent4Logs(prev => [
-              ...prev,
-              { agent: 'Incident Response', msg: '[ALERT] [IDENTIFICATION] Unauthorized lateral movement scan detected.', time: timestamp, status: 'attack' }
-            ].slice(-50));
-          }
-          else if (progress === 40) {
-            setAgent4Logs(prev => [
-              ...prev,
-              { agent: 'Incident Response', msg: '[ACTION] [STOPPING] Isolating compromised node. Dropping unauthorized subnet packets to secure the system.', time: timestamp, status: 'warning' }
-            ].slice(-50));
-          }
-          else if (progress === 60) {
-            setAgent4Logs(prev => [
-              ...prev,
-              { agent: 'Incident Response', msg: '[POLICY] [PREVENTION] System secured. Micro-segmentation access rules restored.', time: timestamp, status: 'warning' },
-              { agent: 'Incident Response', msg: '[INFO] [SOLUTION] Permanent Solution: Restrict SSH to bastion hosts, enforce public key authorization with MFA, and apply micro-segmentation inside the clinical network.', time: timestamp, status: 'info' }
-            ].slice(-50));
-          }
-          else if (progress === 80) {
-            setAgent4Logs(prev => [
-              ...prev,
-              { agent: 'Incident Response', msg: '[ACTION] [SELF-HEALING] Micro-segmentation access rules restored. SSH authentication limits applied.', time: timestamp, status: 'success' }
-            ].slice(-50));
-          }
-          else if (progress === 100) {
-            setAgent4Logs(prev => [
-              ...prev,
-              { agent: 'Incident Response', msg: '[SUCCESS] Restored dynamic SSH authentication bounds. VLAN segment status is SECURE.', time: timestamp, status: 'success' }
-            ].slice(-50));
-          }
-        }
-
-        // --- AGENT 5 LOGIC ---
-        if (attackType === 'agent5_tamper') {
-          if (progress === 20) {
-            setComplianceMetrics(prev => {
-              const blocks = [...prev.auditBlocks];
-              if (blocks.length > 1 && blocks[blocks.length - 1].status !== 'TAMPER_ALERT') {
-                blocks[blocks.length - 1] = {
-                  ...blocks[blocks.length - 1],
-                  hash: 'CORRUPTED_HASH_38120fa78',
-                  status: 'TAMPER_ALERT'
-                };
-              }
-              return {
-                ...prev,
-                auditBlocks: blocks,
-                tamperAttemptActive: true,
-                lastTamperTime: timestamp,
-                tamperPrevented: false
+      // 8. Agent 5 ledger-tamper VISUAL (block turns red, then self-heals).
+      //    All agent log TEXT now streams from the real backend agents over the
+      //    WebSocket (see the simulation/agent_log handler below) — the dashboard
+      //    no longer fabricates agent logs client-side.
+      if (isAttacking && attackType === 'agent5_tamper') {
+        if (progress === 20) {
+          setComplianceMetrics(prev => {
+            const blocks = [...prev.auditBlocks];
+            if (blocks.length > 1 && blocks[blocks.length - 1].status !== 'TAMPER_ALERT') {
+              blocks[blocks.length - 1] = {
+                ...blocks[blocks.length - 1],
+                hash: 'CORRUPTED_HASH_38120fa78',
+                status: 'TAMPER_ALERT'
               };
-            });
-            setAgent5Logs(prev => [
+            }
+            return {
               ...prev,
-              { agent: 'Compliance Audit', msg: '[ALERT] [IDENTIFICATION] Audit log tampering detected.', time: timestamp, status: 'attack' }
-            ].slice(-50));
-          }
-          else if (progress === 40) {
-            setAgent5Logs(prev => [
-              ...prev,
-              { agent: 'Compliance Audit', msg: '[ACTION] [STOPPING] Isolating corrupted block. Dropping invalid ledger commits to secure the system.', time: timestamp, status: 'warning' }
-            ].slice(-50));
-          }
-          else if (progress === 60) {
-            setAgent5Logs(prev => [
-              ...prev,
-              { agent: 'Compliance Audit', msg: '[POLICY] [PREVENTION] System secured. Cryptographic rollback repair applied.', time: timestamp, status: 'warning' },
-              { agent: 'Compliance Audit', msg: '[INFO] [SOLUTION] Trigger cryptographic rollback repair. Permanent solution: Implement cluster-distributed validation to prevent DB local write overrides.', time: timestamp, status: 'info' }
-            ].slice(-50));
-          }
-          else if (progress === 80) {
-            setComplianceMetrics(prev => {
-              const blocks = [...prev.auditBlocks];
-              if (blocks.length > 1) {
-                blocks[blocks.length - 1] = {
-                  ...blocks[blocks.length - 1],
-                  hash: 'ef72183cfab32087c53d10042f9fa21e901',
-                  status: 'VERIFIED & RECOVERED'
-                };
-              }
-              return {
-                ...prev,
-                auditBlocks: blocks,
-                tamperAttemptActive: false,
-                tamperPrevented: true
+              auditBlocks: blocks,
+              tamperAttemptActive: true,
+              lastTamperTime: new Date().toLocaleTimeString(),
+              tamperPrevented: false
+            };
+          });
+        } else if (progress === 80) {
+          setComplianceMetrics(prev => {
+            const blocks = [...prev.auditBlocks];
+            if (blocks.length > 1) {
+              blocks[blocks.length - 1] = {
+                ...blocks[blocks.length - 1],
+                hash: 'ef72183cfab32087c53d10042f9fa21e901',
+                status: 'VERIFIED & RECOVERED'
               };
-            });
-            setAgent5Logs(prev => [
+            }
+            return {
               ...prev,
-              { agent: 'Compliance Audit', msg: '[ACTION] [SELF-HEALING] Reconstructed block #1041 matching parent hash ef72183cf.', time: timestamp, status: 'success' },
-              { agent: 'Compliance Audit', msg: '[SUCCESS] Ledger integrity restored. 100% compliance matching HIPAA audit requirements.', time: timestamp, status: 'success' }
-            ].slice(-50));
-          }
+              auditBlocks: blocks,
+              tamperAttemptActive: false,
+              tamperPrevented: true
+            };
+          });
         }
-
-        // Update unified collab messages for historical dashboard ticker
-        setCollabMessages(prev => {
-          const combined = [
-            ...agent1Logs.filter(l => l.status !== 'info'),
-            ...agent2Logs.filter(l => l.status !== 'info'),
-            ...agent3Logs.filter(l => l.status !== 'info'),
-            ...agent4Logs.filter(l => l.status !== 'info'),
-            ...agent5Logs.filter(l => l.status !== 'info')
-          ];
-          return combined.sort((a, b) => a.time.localeCompare(b.time)).slice(-40);
-        });
       }
 
     }, 1200);
 
     return () => clearInterval(interval);
-  }, [attackActive, attackType, agent1Logs, agent2Logs, agent3Logs, agent4Logs, agent5Logs]);
+  }, [attackActive, attackType]);
 
   useEffect(() => {
     // Fetch initial state

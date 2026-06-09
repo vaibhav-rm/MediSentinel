@@ -22,11 +22,17 @@ void mqttCallback(char* topic, byte* payload, unsigned int length);
 void printWrappedText(int startX, int startY, int maxCharsPerLine, int maxLines, const char* text);
 
 // =====================================================
-// WIFI & MQTT
+// WIFI & MQTT  ---  EDIT THESE FOR YOUR NETWORK
 // =====================================================
-const char* ssid = "Nuvvu Kavalayya";
-const char* password = "23277868";
-const char* mqtt_server = "10.195.152.157";
+//  ssid / password : your 2.4 GHz WiFi (ESP32 has no 5 GHz radio)
+//  mqtt_server      : IP address of the computer running the Docker
+//                     stack (the MediSentinel MQTT broker). Find it with
+//                     `hostname -I` on that machine. NOT 127.0.0.1 — the
+//                     ESP32 must reach it over the LAN. Port 1883 must be
+//                     free on the host (stop any host-level mosquitto).
+const char* ssid = "Sri Krishna Pg 41";
+const char* password = "srikrishnafour";
+const char* mqtt_server = "192.168.0.124";  // laptop's LAN IP on 'Sri Krishna Pg 41' (Docker host running the MQTT broker)
 const int mqtt_port = 1883;
 
 const char* device_id = "esp32-hr-sim-001";
@@ -62,6 +68,11 @@ bool attackSimulationActive = false;
 // UI State
 float lastHR = -1;
 float lastSpO2 = -1;
+
+// Smoothing filters for the noisy MAX30100 readings (EMA) — kept stable so the
+// displayed HR/SpO2 don't jump around between samples.
+float hrEMA = 0;
+float spo2EMA = 0;
 char currentStatusStr[32] = "INITIALIZING";
 uint16_t currentStatusColor = ST77XX_WHITE;
 
@@ -191,7 +202,8 @@ void updateVitals(float hr, float spo2) {
 
 void updateStatus(const char* status, uint16_t color) {
     if (strcmp(status, currentStatusStr) == 0 && color == currentStatusColor) return;
-    strncpy(currentStatusStr, status, sizeof(currentStatusStr));
+    strncpy(currentStatusStr, status, sizeof(currentStatusStr) - 1);
+    currentStatusStr[sizeof(currentStatusStr) - 1] = '\0';
     currentStatusColor = color;
     
     tft.fillRect(82, 40, 76, 32, ST77XX_BLACK);
@@ -247,21 +259,34 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             } 
             else if (doc.containsKey("status")) {
                 const char* status = doc["status"];
-                if (strcmp(status, "quarantined") == 0) {
-                    isQuarantined = true;
-                    updateStatus("QUARANTINED (ISOLATED)", ST77XX_ORANGE);
-                } else if (strcmp(status, "active") == 0 || strcmp(status, "online") == 0) {
+                if (strcmp(status, "active") == 0 || strcmp(status, "online") == 0) {
+                    // Cleared by the AI agents — back to normal operation
                     isQuarantined = false;
                     updateStatus("SECURE", ST77XX_GREEN);
                     updateLog("System restored to normal operation.", ST77XX_GREEN);
+                } else if (strcmp(status, "quarantined") == 0) {
+                    isQuarantined = true;
+                    updateStatus("QUARANTINED (ISOLATED)", ST77XX_ORANGE);
+                } else if (strcmp(status, "blocked") == 0) {
+                    isQuarantined = true;
+                    updateStatus("TRAFFIC BLOCKED", ST77XX_RED);
+                } else if (strcmp(status, "restricted") == 0) {
+                    isQuarantined = true;
+                    updateStatus("EGRESS RESTRICTED", ST77XX_ORANGE);
+                } else {
+                    // Any other non-active status => contained by the agents
+                    isQuarantined = true;
+                    updateStatus("CONTAINED", ST77XX_ORANGE);
                 }
             }
         } 
         else if (strcmp(topic, mqtt_topic_telemetry) == 0) {
-            float hr = doc["heart_rate"];
-            float spo2 = doc["spo2"];
-            // Display MQTT telemetry if local sensor is missing, or if it has no valid reading (meaning no finger on it)
-            if (!sensorAvailable || pox.getHeartRate() < 40 || pox.getHeartRate() > 180) {
+            // Receiver mode ONLY: if this unit has no local sensor it mirrors another
+            // device's telemetry. With a local sensor we ignore the bus and show our
+            // own readings (prevents echoed/attacker values polluting the display).
+            if (!sensorAvailable) {
+                float hr = doc["heart_rate"];
+                float spo2 = doc["spo2"];
                 tsLastMQTTTelemetry = millis();
                 updateVitals(hr, spo2);
             }
@@ -338,7 +363,9 @@ void setup() {
         sensorAvailable = false;
     } else {
         sensorAvailable = true;
-        pox.setIRLedCurrent(MAX30100_LED_CURR_7_6MA);
+        // Higher IR LED current => stronger signal / better SpO2 + HR accuracy than
+        // the 7.6 mA example default (lower it again if your readings saturate).
+        pox.setIRLedCurrent(MAX30100_LED_CURR_11MA);
         pox.setOnBeatDetectedCallback(onBeatDetected);
     }
 
@@ -378,28 +405,36 @@ void loop() {
     }
 
     if (sensorAvailable && (millis() - tsLastReport > REPORTING_PERIOD_MS)) {
-        float hr = pox.getHeartRate();
-        float spo2 = pox.getSpO2();
+        float rawHr = pox.getHeartRate();
+        float rawSpo2 = pox.getSpO2();
+        bool hasFinger = (rawHr > 30.0 && rawHr < 220.0 && rawSpo2 > 50.0);
 
-        bool hasFinger = (hr > 30.0 && hr < 220.0 && spo2 > 50.0);
-        if (!hasFinger) {
-            hr = 0;
-            spo2 = 0;
-        }
-
-        if (attackSimulationActive) {
+        float hr, spo2;
+        if (attackSimulationActive && !isQuarantined) {
+            // Under an ACTIVE (not-yet-contained) attack the device telemetry is
+            // spoofed — these are the "ruined" values. Once the agents quarantine
+            // the device (isQuarantined), we stop spoofing and resume real readings.
             hr = random(210, 230);
             spo2 = random(80, 84);
+            hrEMA = 0;
+            spo2EMA = 0;  // reset filters so real values re-stabilise after the attack
+        } else if (hasFinger) {
+            // Smooth the noisy sensor with an EMA for a stable, accurate display.
+            hrEMA   = (hrEMA   == 0) ? rawHr   : (0.75f * hrEMA   + 0.25f * rawHr);
+            spo2EMA = (spo2EMA == 0) ? rawSpo2 : (0.75f * spo2EMA + 0.25f * rawSpo2);
+            hr = hrEMA;
+            spo2 = spo2EMA;
         } else {
-            if (hr < 40 || hr > 180) hr = 0;
-            if (spo2 < 70 || spo2 > 100) spo2 = 0;
+            // No finger on the sensor.
+            hr = 0;
+            spo2 = 0;
+            hrEMA = 0;
+            spo2EMA = 0;
         }
 
-        // Only update local vitals on screen if we have a valid local reading,
-        // or if we haven't received any MQTT telemetry in the last 5 seconds.
-        if (hr > 0 || (millis() - tsLastMQTTTelemetry > 5000)) {
-            updateVitals(hr, spo2);
-        }
+        // With a local sensor we always display our OWN reading (never the MQTT
+        // telemetry echoed back on the bus, which would show another source's value).
+        updateVitals(hr, spo2);
 
         StaticJsonDocument<256> doc;
         doc["device_id"] = device_id;
