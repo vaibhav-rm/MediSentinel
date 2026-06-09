@@ -43,8 +43,8 @@ void performOTA(const char* version, const char* url, bool isRollback);
 //                     free on the host (stop any host-level mosquitto).
 const char* ssid = "vaii";
 const char* password = "nahipata";
-const char* mqtt_server = "10.217.106.118";  // laptop's LAN IP on 'Sri Krishna Pg 41' (Docker host running the MQTT broker)
-const int mqtt_port = 1883;
+const char* mqtt_server = "10.217.106.157";  // laptop's LAN IP on 'Sri Krishna Pg 41' (Docker host running the MQTT broker)
+const int mqtt_port = 18833;
 
 const char* device_id = "esp32-hr-sim-001";
 const char* mqtt_topic_telemetry = "medisentinel/iot/telemetry";
@@ -317,6 +317,15 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     StaticJsonDocument<512> doc;
     DeserializationError error = deserializeJson(doc, message);
     
+    Serial.print("MQTT Topic: ");
+    Serial.println(topic);
+    Serial.print("MQTT Payload: ");
+    Serial.println(message);
+    if (error) {
+        Serial.print("JSON Error: ");
+        Serial.println(error.c_str());
+    }
+
     if (!error) {
         if (strcmp(topic, mqtt_topic_toggle) == 0) {
             attackSimulationActive = doc["attack_active"];

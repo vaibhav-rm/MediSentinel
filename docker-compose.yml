@@ -123,7 +123,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       # Base URL the ESP32 uses to DOWNLOAD OTA images — must be the Docker host's
       # LAN IP (same network as the device), not localhost.
-      - OTA_BASE_URL=${OTA_BASE_URL:-http://192.168.0.124:8000}
+      - OTA_BASE_URL=${OTA_BASE_URL:-http://10.217.106.157:8000}
       - FIRMWARE_SIGNING_KEY=${FIRMWARE_SIGNING_KEY:-medisentinel_fw_signing_key_2026}
     volumes:
       - ./backend:/app
