@@ -41,9 +41,9 @@ void performOTA(const char* version, const char* url, bool isRollback);
 //                     `hostname -I` on that machine. NOT 127.0.0.1 — the
 //                     ESP32 must reach it over the LAN. Port 1883 must be
 //                     free on the host (stop any host-level mosquitto).
-const char* ssid = "Sri Krishna Pg 41";
-const char* password = "srikrishnafour";
-const char* mqtt_server = "192.168.0.124";  // laptop's LAN IP on 'Sri Krishna Pg 41' (Docker host running the MQTT broker)
+const char* ssid = "vaii";
+const char* password = "nahipata";
+const char* mqtt_server = "10.217.106.118";  // laptop's LAN IP on 'Sri Krishna Pg 41' (Docker host running the MQTT broker)
 const int mqtt_port = 1883;
 
 const char* device_id = "esp32-hr-sim-001";

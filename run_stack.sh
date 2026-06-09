@@ -99,7 +99,7 @@ if [ ! -f docker-compose.yml ]; then
         '    image: eclipse-mosquitto:2.0' \
         '    container_name: medisentinel-mqtt' \
         '    ports:' \
-        '      - "1883:1883"' \
+        '      - "18833:1883"' \
         '      - "9001:9001"' \
         '    volumes:' \
         '      - ./infrastructure/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf' \
