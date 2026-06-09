@@ -45,20 +45,19 @@ const IoTMap: React.FC = () => {
     return 8;
   };
 
-  // Pulse rate logic based on status
+  // Heart rate — use the REAL telemetry streamed from the device over WebSocket
+  // (device.metadata_json.heart_rate), not the client-side animation.
   const getDeviceHeartRate = (d: Device) => {
-    if (d.device_id === 'esp32-hr-sim-001') {
-      return deviceMetrics.heartRate;
-    }
-    return 74;
+    const hr = d.metadata_json?.heart_rate;
+    if (typeof hr === 'number') return Math.round(hr);
+    return d.device_id === 'esp32-hr-sim-001' ? 0 : 74;
   };
 
-  // SpO2 logic
+  // SpO2 — real telemetry from the device.
   const getDeviceSpO2 = (d: Device) => {
-    if (d.device_id === 'esp32-hr-sim-001') {
-      return deviceMetrics.spo2;
-    }
-    return 98;
+    const spo2 = d.metadata_json?.spo2;
+    if (typeof spo2 === 'number') return Math.round(spo2);
+    return d.device_id === 'esp32-hr-sim-001' ? 0 : 98;
   };
 
   return (
