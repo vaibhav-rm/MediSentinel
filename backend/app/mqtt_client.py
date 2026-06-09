@@ -69,6 +69,7 @@ def on_connect(client, userdata, flags, rc, properties=None):
         client.subscribe("devices/+/status")
         client.subscribe("medisentinel/iot/telemetry")
         client.subscribe("medisentinel/iot/discovery")
+        client.subscribe("medisentinel/iot/firmware/ack")
     else:
         logger.error(f"Failed to connect to MQTT broker, return code {rc}")
 
@@ -80,6 +81,23 @@ def on_message(client, userdata, msg):
         # Forward everything to Kafka robustly via background task
         loop = userdata.get('loop')
         
+        # --- Firmware ACK from a device (rejected / failed) ---
+        if topic == "medisentinel/iot/firmware/ack":
+            if loop and loop.is_running():
+                from app.routers.firmware import handle_firmware_ack
+                asyncio.run_coroutine_threadsafe(handle_firmware_ack(payload), loop)
+            return
+
+        # --- Sync the device-reported running firmware version (post-OTA reboot) ---
+        if payload.get("firmware") and (topic == "medisentinel/iot/discovery"
+                                        or topic == "medisentinel/iot/telemetry"
+                                        or topic.endswith("/data")):
+            if loop and loop.is_running():
+                from app.routers.firmware import sync_reported_version
+                asyncio.run_coroutine_threadsafe(
+                    sync_reported_version(payload.get("device_id"), payload.get("firmware")), loop
+                )
+
         # --- Auto Device Registration Logic ---
         if topic.endswith("/status") or topic == "medisentinel/iot/discovery":
             device_id = payload.get("device_id")

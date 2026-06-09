@@ -20,6 +20,8 @@ HIPAA_POLICY_MAP = {
     "alert_only":         {"rule": "§164.308(a)(1)(ii)", "control": "Risk Analysis",           "category": "Administrative Safeguards"},
     "ingest_ioc":         {"rule": "§164.308(a)(1)(i)",  "control": "Security Management",     "category": "Administrative Safeguards"},
     "anomaly_detected":   {"rule": "§164.312(b)",        "control": "Audit Controls",          "category": "Technical Safeguards"},
+    "threat_detected":    {"rule": "§164.308(a)(6)(ii)", "control": "Security Incident Procedures", "category": "Administrative Safeguards"},
+    "ledger_seal":        {"rule": "§164.312(b)",        "control": "Audit Controls",          "category": "Technical Safeguards"},
 }
 
 class ComplianceAuditAgent:
@@ -38,6 +40,25 @@ class ComplianceAuditAgent:
         self.event_buffer: List[Dict[str, Any]] = []
         self.violation_count = 0
         
+    async def init_chain(self):
+        """
+        Seed the in-memory last_hash from the most recent persisted block so the
+        cryptographic hash chain stays continuous across agent restarts (otherwise
+        the next block would point at GENESIS and break verify-chain).
+        """
+        try:
+            async with self.SessionLocal() as session:
+                from sqlalchemy import text
+                res = await session.execute(text("SELECT current_hash FROM audit_logs ORDER BY id DESC LIMIT 1"))
+                row = res.first()
+                if row and row[0]:
+                    self.last_hash = row[0]
+                    logger.info(f"ComplianceAudit: resumed hash chain from {self.last_hash[:12]}...")
+                else:
+                    logger.info("ComplianceAudit: starting a fresh hash chain from GENESIS.")
+        except Exception as e:
+            logger.error(f"ComplianceAudit init_chain failed: {e}")
+
     def _map_hipaa_policy(self, action: str) -> Dict[str, str]:
         """
         Log Parser: Maps an action to its corresponding HIPAA Security Rule reference.
@@ -112,10 +133,13 @@ class ComplianceAuditAgent:
             logger.warning(f"ComplianceAudit (Policy Engine): {v}")
             self.violation_count += 1
         
-        # Build hash chain entry
-        content_to_hash = f"{self.last_hash}{action}{actor}{target}{json.dumps(details, sort_keys=True)}"
+        # Build the EXACT details object that gets persisted, then hash THAT (so the
+        # stored block can be independently re-hashed and verified — the hash must
+        # cover what is stored, not the pre-enrichment input).
+        details_obj = {**details, "hipaa_ref": hipaa_ref, "violations": violations}
+        content_to_hash = f"{self.last_hash}{action}{actor}{target}{json.dumps(details_obj, sort_keys=True)}"
         current_hash = hashlib.sha256(content_to_hash.encode()).hexdigest()
-        
+
         # Buffer for report generation
         self.event_buffer.append({
             "action": action,
@@ -141,11 +165,7 @@ class ComplianceAuditAgent:
                         "action": action,
                         "actor": actor,
                         "target": target,
-                        "details": json.dumps({
-                            **details,
-                            "hipaa_ref": hipaa_ref,
-                            "violations": violations
-                        }),
+                        "details": json.dumps(details_obj),
                         "prev_hash": self.last_hash,
                         "curr_hash": current_hash
                     }

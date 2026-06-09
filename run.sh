@@ -99,7 +99,7 @@ if [ ! -f docker-compose.yml ]; then
         '    image: eclipse-mosquitto:2.0' \
         '    container_name: medisentinel-mqtt' \
         '    ports:' \
-        '      - "18833:1883"' \
+        '      - "1883:1883"' \
         '      - "9001:9001"' \
         '    volumes:' \
         '      - ./infrastructure/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf' \
@@ -265,10 +265,10 @@ if command -v pio &> /dev/null; then
     
     if [ -e /dev/ttyUSB0 ] || [ -e /dev/ttyACM0 ]; then
         echo "[+] Connected ESP32 detected! Flashing firmware automatically..."
-        (cd iot_devices/esp32_monitor && pio run -e v1_0_0 --target upload)
+        (cd iot_devices/esp32_monitor && pio run --target upload)
     else
         echo "[*] To upload code to your physical ESP32 device, connect it and run:"
-        echo "    (cd iot_devices/esp32_monitor && pio run -e v1_0_0 --target upload)"
+        echo "    (cd iot_devices/esp32_monitor && pio run --target upload)"
     fi
 else
     echo "[!] PlatformIO Core not found. Skipping local ESP32 compilation."

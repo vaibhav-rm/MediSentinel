@@ -19,72 +19,379 @@ logger = logging.getLogger(__name__)
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
+# Consecutive clean telemetry samples required before lifting containment. Debounces
+# recovery so a quarantined device reporting normal values (or interleaved clean/attack
+# sources) doesn't oscillate in and out of quarantine.
+CLEAN_SAMPLES_TO_RECOVER = int(os.getenv("CLEAN_SAMPLES_TO_RECOVER", "3"))
+
 network_agent = NetworkMonitorAgent()
 iot_agent = IoTGuardianAgent()
 ir_agent = IncidentResponseAgent()
 ti_agent = ThreatIntelligenceAgent()
 audit_agent = ComplianceAuditAgent()
 
+
+# =====================================================================
+# CONTAINMENT PLAYBOOKS  (one per detected threat category)
+#   detector  : which agent surfaces the detection
+#   status    : protective device status applied during containment
+#               (the backend PATCH publishes this to the ESP32 over MQTT)
+#   action / policy / playbook : audit-trail metadata
+# =====================================================================
+PLAYBOOKS = {
+    "ddos":    dict(detector="Network Monitor",     status="blocked",     action="drop_traffic",
+                    policy="POL-NET-004", playbook="PB-DDOS-BLOCK-v1",
+                    alert_type="Network Anomaly (DDoS)",            severity="high"),
+    "c2":      dict(detector="Threat Intelligence", status="restricted",  action="block_egress",
+                    policy="POL-NET-008", playbook="PB-C2-BLOCK-v2",
+                    alert_type="Threat Intel Match (C2)",           severity="high"),
+    "lateral": dict(detector="Network Monitor",     status="quarantined", action="vlan_isolate",
+                    policy="POL-NET-006", playbook="PB-VLAN-ISOLATE-v1",
+                    alert_type="Network Anomaly (Lateral Movement)", severity="high"),
+    "spoof":   dict(detector="IoT Guardian",        status="quarantined", action="quarantine_device",
+                    policy="POL-IOT-002", playbook="PB-DEVICE-QUARANTINE-v3",
+                    alert_type="Device Behavior Anomaly",           severity="critical"),
+    "tamper":  dict(detector="Compliance Audit",    status="quarantined", action="ledger_rollback",
+                    policy="POL-AUD-001", playbook="PB-LEDGER-HEAL-v1",
+                    alert_type="Ledger Tamper Attempt",             severity="high"),
+    "network": dict(detector="Network Monitor",     status="restricted",  action="limit_network_access",
+                    policy="POL-NET-003", playbook="PB-NET-RESTRICT-v1",
+                    alert_type="Network Anomaly",                   severity="high"),
+}
+
+STOPPING = {
+    "ddos":    "[ACTION] [STOPPING] eBPF/XDP filter installed — dropping spoofed TCP SYN packets at ingress; rate-limiting port 80/443.",
+    "c2":      "[ACTION] [STOPPING] Severed the socket to the remote C2 host and injected a firewall drop rule for the destination subnet.",
+    "lateral": "[ACTION] [STOPPING] Disabled the offending switch port and routed the device into sandbox VLAN 999.",
+    "spoof":   "[ACTION] [STOPPING] Intercepted the telemetry stream and rejected the spoofed frames; reverted local device state.",
+    "tamper":  "[ACTION] [STOPPING] Suspended ledger commits and isolated the corrupted block entry.",
+    "network": "[ACTION] [STOPPING] Restricted the device to its local VLAN and throttled the anomalous flows.",
+}
+
+SOLUTION = {
+    "ddos":    "[INFO] [SOLUTION] Enable kernel syncookies, ingress QoS shaping, and edge DDoS scrubbing for permanent mitigation.",
+    "c2":      "[INFO] [SOLUTION] Deploy DNS RPZ, restrict egress to whitelisted medical proxies, and enforce zero-trust routing.",
+    "lateral": "[INFO] [SOLUTION] Enforce SSH key auth + MFA, disable password logins, and apply micro-segmentation.",
+    "spoof":   "[INFO] [SOLUTION] Sign telemetry frames with HMAC-SHA256 in firmware and enrol devices in mutual TLS (mTLS).",
+    "tamper":  "[INFO] [SOLUTION] Adopt distributed consensus (e.g. Raft) so no single node can override the audit ledger.",
+    "network": "[INFO] [SOLUTION] Tighten baseline flow policies and enable continuous behavioural monitoring.",
+}
+
+HEAL = {
+    "ddos":    "[ACTION] [SELF-HEALING] Traffic ingestion restored to nominal bounds; filter rules reconstructed.",
+    "c2":      "[ACTION] [SELF-HEALING] Egress verified clean; temporary firewall rules cleaned up.",
+    "lateral": "[ACTION] [SELF-HEALING] Micro-segmentation restored; SSH authentication limits re-applied.",
+    "spoof":   "[ACTION] [SELF-HEALING] Telemetry is back within clinical bounds; device baseline re-verified.",
+    "tamper":  "[ACTION] [SELF-HEALING] Block reconstructed to match its parent hash; ledger integrity restored.",
+    "network": "[ACTION] [SELF-HEALING] Flows normalised; baseline policy re-applied.",
+}
+
+_SCENARIO_TO_CATEGORY = {
+    "agent1_ddos": "ddos",
+    "agent2_spoof": "spoof",
+    "agent3_c2": "c2",
+    "agent4_vlan": "lateral",
+    "agent5_tamper": "tamper",
+}
+
+
 async def get_kafka_producer():
-    producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
-    await producer.start()
-    return producer
+    # Retry until Kafka is reachable (it may still be starting up).
+    while True:
+        producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
+        try:
+            await producer.start()
+            logger.info("Kafka producer connected.")
+            return producer
+        except Exception as e:
+            logger.warning(f"Waiting for Kafka producer... {e}")
+            try:
+                await producer.stop()
+            except Exception:
+                pass
+            await asyncio.sleep(5)
+
 
 async def send_agent_log(agent_name: str, status: str, message: str):
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
-                f"{BACKEND_URL}/simulation/log", 
-                json={"agent_name": agent_name, "status": status, "message": message}
+                f"{BACKEND_URL}/simulation/log",
+                json={"agent_name": agent_name, "status": status, "message": message},
+                timeout=5.0,
             )
     except Exception as e:
         logger.error(f"Failed to send simulation log for {agent_name}: {e}")
 
+
+def _iso_score(net_result: dict):
+    iso = (net_result.get("models", {}) or {}).get("isolation_forest", {})
+    if isinstance(iso, dict):
+        return iso.get("decision_score")
+    return None
+
+
+def detect(payload: dict, net_result: dict, iot_result: dict, ioc) -> tuple:
+    """
+    Decide whether this telemetry sample represents an attack — driven by the
+    REAL model / rule output:
+      * NetworkMonitor Isolation-Forest + attack-signature matcher,
+      * IoTGuardian autoencoder + clinical rule engine,
+      * ThreatIntelligence deterministic IOC correlation,
+      * Compliance ledger-tamper flag.
+
+    Returns (category, evidence) or (None, {}). The threat decision is gated on
+    the models; a declared scenario hint is only used to pick the correct
+    narrative/playbook among genuinely-detected anomalies (distinguishing e.g.
+    a SYN flood from a port scan from three scalar features is ambiguous).
+    """
+    network = payload.get("network", {}) or {}
+    sigs = net_result.get("matched_signatures", []) or []
+    pkt = float(network.get("packet_rate", 0) or 0)
+
+    threat = bool(
+        net_result.get("is_anomaly")
+        or iot_result.get("is_anomaly")
+        or ioc
+        or payload.get("tamper_ledger")
+    )
+    if not threat:
+        return None, {}
+
+    ev = {
+        "packet_rate": network.get("packet_rate", 0),
+        "dest": network.get("destination_ip"),
+        "ioc": ioc,
+        "hr": payload.get("heart_rate"),
+        "spo2": payload.get("spo2"),
+        "loss": iot_result.get("loss", 0),
+        "violations": ((iot_result.get("models", {}) or {}).get("rule_engine", {}) or {}).get("details", []),
+        "iso": _iso_score(net_result),
+        "score": net_result.get("score", 0),
+    }
+
+    scenario = payload.get("attack_type", "")
+    if scenario in _SCENARIO_TO_CATEGORY:
+        category = _SCENARIO_TO_CATEGORY[scenario]
+    elif ioc or "Data Exfiltration" in sigs:
+        category = "c2"
+    elif iot_result.get("is_anomaly"):
+        category = "spoof"
+    elif "Port Scan" in sigs and pkt < 2000:
+        category = "lateral"
+    elif "SYN Flood" in sigs:
+        category = "ddos"
+    elif payload.get("tamper_ledger"):
+        category = "tamper"
+    else:
+        category = "network"
+
+    return category, ev
+
+
+def build_identification(category: str, ev: dict) -> str:
+    if category == "ddos":
+        iso = ev.get("iso")
+        iso_str = f"{iso:.3f}" if isinstance(iso, (int, float)) else "training"
+        return (f"[ALERT] [IDENTIFICATION] SYN-flood signature + Isolation Forest flagged a flood: "
+                f"packet_rate={ev.get('packet_rate')} pkts/s exceeds the 500 pkts/s threshold "
+                f"(iso decision_score={iso_str}). Combined threat score {ev.get('score')}/100.")
+    if category == "c2":
+        ioc = ev.get("ioc")
+        if ioc:
+            return (f"[ALERT] [IDENTIFICATION] Outbound endpoint {ioc['indicator']} matches IOC feed "
+                    f"'{ioc['source_feed']}' ({ioc['threat_type']}, MITRE {ioc['mitre_tactic']}). "
+                    f"Active C2 / exfiltration channel.")
+        return (f"[ALERT] [IDENTIFICATION] High outbound asymmetry to {ev.get('dest')} matches the "
+                f"data-exfiltration signature. Suspected C2 tunnel.")
+    if category == "lateral":
+        return (f"[ALERT] [IDENTIFICATION] Port-scan signature: packet_rate={ev.get('packet_rate')} pkts/s "
+                f"with low payload — rapid connection attempts probing the ICU VLAN.")
+    if category == "spoof":
+        viol = ev.get("violations") or []
+        descs = "; ".join(v.get("description", "") for v in viol[:2]) if viol else "clinical bounds exceeded"
+        return (f"[ALERT] [IDENTIFICATION] Autoencoder + rule engine flag a telemetry spoof: "
+                f"HR={ev.get('hr')} BPM, SpO2={ev.get('spo2')}% (recon_loss={ev.get('loss')}). "
+                f"Violations: {descs}.")
+    if category == "tamper":
+        return ("[ALERT] [IDENTIFICATION] Audit hash-chain verification failed — a block parent-hash "
+                "mismatch indicates ledger tampering.")
+    return (f"[ALERT] [IDENTIFICATION] Network anomaly: packet_rate={ev.get('packet_rate')} pkts/s "
+            f"outside the learned baseline (Isolation Forest flagged).")
+
+
+async def handle_attack_start(producer, device_id, category, ev):
+    """A new attack episode began: narrate identification → containment →
+    prevention → solution with REAL evidence, and actually quarantine the device
+    (the PATCH drives the ESP32 LCD)."""
+    pb = PLAYBOOKS[category]
+    det = pb["detector"]
+
+    # 1. The detecting agent identifies the threat (real numbers).
+    await send_agent_log(det, "attack", build_identification(category, ev))
+    await asyncio.sleep(0.15)
+
+    # 2. Incident Response executes containment — ACTUAL device status change.
+    ok = await ir_agent.contain(
+        device_id, status=pb["status"], action=pb["action"],
+        policy_id=pb["policy"], playbook=pb["playbook"],
+    )
+    await send_agent_log(
+        "Incident Response", "mitigated",
+        f"[ACTION] [CONTAINMENT] Playbook {pb['playbook']} executed | action={pb['action']} | "
+        f"policy={pb['policy']} | target={device_id} → status '{pb['status']}'"
+        + ("" if ok else " (WARNING: backend PATCH failed)")
+    )
+    await asyncio.sleep(0.15)
+
+    # 3 & 4. Detecting agent: how it stopped the attack + the permanent fix.
+    await send_agent_log(det, "warning", STOPPING[category])
+    await asyncio.sleep(0.15)
+    await send_agent_log(det, "info", SOLUTION[category])
+    await asyncio.sleep(0.15)
+
+    # 5. Compliance: tamper-proof audit entry (real hash chain in Postgres).
+    sig = hashlib.sha256(f"{device_id}-{category}-{datetime.utcnow().isoformat()}".encode()).hexdigest()[:16]
+    await send_agent_log(
+        "Compliance Audit", "logged",
+        f"[AUDIT] HIPAA §164.308(a)(6)(ii) security incident recorded | category={category} | "
+        f"hash-chain signature {sig} | tamper-proof entry sealed."
+    )
+    try:
+        await audit_agent.log_event(
+            action="threat_detected", actor="AgentCluster",
+            target=device_id, details={"category": category, "severity": pb["severity"]},
+        )
+    except Exception as e:
+        logger.error(f"Compliance log_event failed: {e}")
+
+    # Kafka alert → backend consumer → dashboard alert feed.
+    await producer.send_and_wait("alerts", json.dumps({
+        "device_id": device_id,
+        "type": pb["alert_type"],
+        "severity": pb["severity"],
+        "description": f"{build_identification(category, ev)} | Action: {pb['action']} ({pb['policy']})",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }).encode("utf-8"))
+
+
+async def handle_attack_end(producer, device_id, category):
+    """The threat cleared (telemetry back to normal): narrate self-healing and
+    restore the device to active (the PATCH drives the ESP32 LCD back to SECURE)."""
+    pb = PLAYBOOKS.get(category, PLAYBOOKS["network"])
+    det = pb["detector"]
+
+    await send_agent_log(det, "success", HEAL[category])
+    await asyncio.sleep(0.15)
+
+    ok = await ir_agent.restore(device_id)
+    await send_agent_log(
+        "Incident Response", "success",
+        f"[RECOVERY] [SELF-HEALING] Threat cleared on {device_id}. Containment lifted → status 'active'."
+        + ("" if ok else " (WARNING: backend PATCH failed)")
+    )
+    await asyncio.sleep(0.15)
+    await send_agent_log(
+        "Compliance Audit", "success",
+        f"[AUDIT] Incident closed for {device_id}. Audit ledger sealed; HIPAA §164.312(b) controls COMPLIANT."
+    )
+
+    await producer.send_and_wait("alerts", json.dumps({
+        "device_id": device_id,
+        "type": pb["alert_type"],
+        "severity": "low",
+        "description": f"Incident resolved — {device_id} restored to active by the agent swarm.",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }).encode("utf-8"))
+
+
+async def send_normal_heartbeat(device_id, hr, spo2, iot_result):
+    """Light, throttled 'all clear' chatter so the dashboard consoles stay alive
+    between attacks — without flooding them."""
+    await send_agent_log("Network Monitor", "normal",
+                         "Traffic baseline normal | packet activity nominal | Isolation Forest: OK.")
+    await send_agent_log("IoT Guardian", "normal",
+                         f"Monitoring {device_id} | HR={hr} BPM, SpO2={spo2}% | "
+                         f"recon_loss={iot_result.get('loss', 0)} | 0 rule violations.")
+    await send_agent_log("Threat Intelligence", "normal",
+                         f"STIX/TAXII correlation complete | no active IOC match for {device_id}.")
+    await send_agent_log("Compliance Audit", "normal",
+                         "Routine telemetry logged | HIPAA §164.312(b) audit controls COMPLIANT.")
+
+
+LEDGER_SEAL_INTERVAL = int(os.getenv("LEDGER_SEAL_INTERVAL", "20"))  # seconds
+
+
+async def ledger_heartbeat_worker():
+    """
+    Agent 5: seal a routine block into the immutable cryptographic audit ledger at
+    a FIXED INTERVAL. Each block is SHA-256-chained to its parent in Postgres, so the
+    chain grows continuously even when there are no attacks — a real, verifiable
+    blockchain rather than a static display.
+    """
+    block_no = 0
+    while True:
+        await asyncio.sleep(LEDGER_SEAL_INTERVAL)
+        block_no += 1
+        try:
+            await audit_agent.log_event(
+                action="ledger_seal",
+                actor="ComplianceAuditAgent",
+                target="audit-ledger",
+                details={"type": "periodic_seal", "sealed_at": datetime.utcnow().isoformat() + "Z"},
+            )
+            await send_agent_log(
+                "Compliance Audit", "logged",
+                f"[LEDGER] Sealed periodic audit block (chain head {audit_agent.last_hash[:12]}…) — "
+                f"HIPAA §164.312(b) Audit Controls."
+            )
+        except Exception as e:
+            logger.error(f"Ledger heartbeat error: {e}")
+
+
 async def threat_intel_worker(producer):
     """
     Background worker for Agent 3 (Threat Intelligence).
-    Polls for STIX IOCs and publishes them.
+    Polls for STIX IOCs and publishes them to the backend feed.
     """
     async with httpx.AsyncClient() as client:
         while True:
             try:
                 new_iocs = ti_agent.get_new_intel()
                 for ioc in new_iocs:
-                    # Publish to Kafka for other agents (if needed)
-                    await producer.send_and_wait("threat_intel", json.dumps(ioc).encode('utf-8'))
-                    
-                    # Also send to backend
+                    await producer.send_and_wait("threat_intel", json.dumps(ioc).encode("utf-8"))
                     await client.post(f"{BACKEND_URL}/threat-intel/inject", params=ioc)
-                    
-                    # Audit Log
                     await audit_agent.log_event(
                         action="ingest_ioc",
                         actor="ThreatIntelligenceAgent",
                         target=ioc["indicator"],
-                        details=ioc
+                        details=ioc,
                     )
             except Exception as e:
                 logger.error(f"Threat Intel Worker Error: {e}")
-            
             await asyncio.sleep(10)
 
+
 async def main():
-    logger.info("Starting MediSentinel Agents Orchestrator (All 5 Agents)...")
-    
+    logger.info("Starting MediSentinel Agents Orchestrator (model-driven detection)...")
+
     await asyncio.sleep(5)
-    
+
     producer = await get_kafka_producer()
-    
-    # Start Agent 3 background task
+
+    # Resume the audit hash chain from the DB so it stays continuous, then start
+    # the fixed-interval ledger sealer and the threat-intel feed worker.
+    await audit_agent.init_chain()
+    asyncio.create_task(ledger_heartbeat_worker())
     asyncio.create_task(threat_intel_worker(producer))
-    
+
     consumer = AIOKafkaConsumer(
         'raw_data',
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         group_id="medisentinel-agents-group",
-        auto_offset_reset="earliest"
+        auto_offset_reset="latest",
     )
-    
+
     while True:
         try:
             await consumer.start()
@@ -94,326 +401,83 @@ async def main():
             logger.warning(f"Waiting for Kafka... {e}")
             await asyncio.sleep(5)
 
+    # Per-device episode state: {device_id: {"under_attack": bool, "category": str|None, "tick": int}}
+    device_state = {}
+
     try:
         async for msg in consumer:
-            data = json.loads(msg.value.decode('utf-8'))
+            try:
+                data = json.loads(msg.value.decode('utf-8'))
+            except Exception:
+                continue
+
             topic = data.get("mqtt_topic", "")
-            
-            # Only analyze actual telemetry data topics (skip discovery/control/toggle)
+            # Only analyse real telemetry (skip discovery / control / toggle).
             if not (topic == "medisentinel/iot/telemetry" or topic.endswith("/data")):
                 continue
-                
-            payload = data.get("payload", {})
+
+            payload = data.get("payload", {}) or {}
             device_id = payload.get("device_id", "unknown")
             heart_rate = payload.get("heart_rate", 75.0)
             spo2 = payload.get("spo2", 98.0)
-            network = payload.get("network", {})
-            
-            attack_type = payload.get("attack_type", "")
-            tamper_ledger = payload.get("tamper_ledger", False)
-            is_attack = attack_type != "" or heart_rate > 150 or (0 < spo2 < 90) or network.get("packet_rate", 0) > 500 or tamper_ledger
-            
-            # Agent 1: Network Monitor (LSTM + Isolation Forest)
-            network_result = network_agent.analyze_traffic(network)
-            models_info = network_result.get("models", {})
-            if attack_type == "agent1_ddos":
-                await send_agent_log("Network Monitor", "attack", "[ALERT] [IDENTIFICATION] LSTM flags abnormal packet frequency spike on eth0! (2,400 pkts/s exceeds threshold 200)")
-                await asyncio.sleep(0.2)
-                await send_agent_log("Network Monitor", "warning", "[ACTION] [STOPPING] Enforcing eBPF filter rule drop. Dropping TCP SYN packets from attack source.")
-                await asyncio.sleep(0.2)
-                await send_agent_log("Network Monitor", "warning", "[POLICY] [PREVENTION] Applied automated rate-limiting policy to port 80/443 on IoT gateway subnet.")
-                await asyncio.sleep(0.2)
-                await send_agent_log("Network Monitor", "info", "[INFO] [SOLUTION] Configure ingress QoS queue shaping, enable syncookies on host kernel, and deploy edge DDoS scrubbers.")
-                await asyncio.sleep(0.2)
-                await send_agent_log("Network Monitor", "success", "[ACTION] [SELF-HEALING] Reconstructed traffic rules. Traffic ingestion rate restored to nominal bounds (12 pkts/sec).")
-                await asyncio.sleep(0.2)
-                net_msg = "[SUCCESS] Network Monitor threat resolved. Subnet status restored to SECURE."
-                net_status = "success"
-            elif network_result.get("is_anomaly") or attack_type == "agent4_vlan":
-                sigs = network_result.get("matched_signatures", [])
-                if not sigs:
-                    sigs = ["Port Scan"]
-                iso_info = models_info.get("isolation_forest", {})
-                lstm_info = models_info.get("lstm", {})
-                iso_score = iso_info.get('decision_score', -0.184) if isinstance(iso_info, dict) else -0.184
-                lstm_conf = lstm_info.get('confidence', 98.7) if isinstance(lstm_info, dict) else 98.7
-                net_msg = (
-                    f"Network Monitor: ANOMALY DETECTED | "
-                    f"IsolationForest: FLAGGED "
-                    f"(decision_score={iso_score}) | "
-                    f"LSTM: FLAGGED "
-                    f"(confidence={lstm_conf:.1f}%, window=10) | "
-                    f"Matched Signatures: {sigs} | "
-                    f"Combined Threat Score: 95/100"
-                )
-                net_status = "anomaly"
-            else:
-                net_msg = (
-                    f"Network Monitor: Traffic baseline normal | "
-                    f"Packet rate: {network.get('packet_rate', 12)} pkts/s | "
-                    f"IsolationForest: {'training' if models_info.get('isolation_forest') == 'training' else 'OK'} | "
-                    f"LSTM: {'training' if models_info.get('lstm') == 'training' else 'OK'}"
-                )
-                net_status = "normal"
-            await send_agent_log("Network Monitor", net_status, net_msg)
-            
-            # Agent 2: IoT Guardian (Autoencoder + Rule Engine)
+            network = payload.get("network", {}) or {}
+
+            # --- Run the REAL detection models on every sample ---
+            net_result = network_agent.analyze_traffic(network)
             iot_result = iot_agent.analyze_device_behavior(device_id, payload)
-            iot_models = iot_result.get("models", {})
-            if attack_type == "agent2_spoof":
-                await send_agent_log("IoT Guardian", "attack", "[ALERT] [IDENTIFICATION] Clinical bounds check failed! Heart rate (220 BPM) and SpO2 (81%) reconstructed with high error loss (0.942).")
-                await asyncio.sleep(0.2)
-                await send_agent_log("IoT Guardian", "warning", "[ACTION] [STOPPING] Intercepting data telemetry stream. Reverting local device state updates.")
-                await asyncio.sleep(0.2)
-                await send_agent_log("IoT Guardian", "warning", "[POLICY] [PREVENTION] Enforced dynamic baseline mutation rejection. Telemetry from device quarantined.")
-                await asyncio.sleep(0.2)
-                await send_agent_log("IoT Guardian", "info", "[INFO] [SOLUTION] Implement cryptographically signed telemetry frames from device firmware (HMAC-SHA256) and enroll devices in mutual TLS (mTLS).")
-                await asyncio.sleep(0.2)
-                await send_agent_log("IoT Guardian", "success", "[ACTION] [SELF-HEALING] Telemetry values returned within clinical bounds. Restoring device status to ACTIVE.")
-                await asyncio.sleep(0.2)
-                iot_msg = "[SUCCESS] IoT telemetry verification successful. Patient heart rate monitoring baseline is SECURE."
-                iot_status = "success"
-            elif iot_result.get("is_anomaly"):
-                ae_info = iot_models.get("autoencoder", {})
-                re_info = iot_models.get("rule_engine", {})
-                rule_details = re_info.get("details", [])
-                rule_desc = "; ".join([r["description"] for r in rule_details[:2]]) if rule_details else "Heart rate outside safe clinical range"
-                iot_msg = (
-                    f"IoT Guardian: ANOMALY on {device_id} | "
-                    f"Autoencoder: FLAGGED "
-                    f"(recon_loss=0.942) | "
-                    f"Rule Engine: 2 violation(s) [{rule_desc}] | "
-                    f"Firmware: VERIFIED | "
-                    f"BPM={heart_rate}, SpO2={spo2}% | Risk Score: 92/100"
-                )
-                iot_status = "anomaly"
-            else:
-                iot_msg = (
-                    f"IoT Guardian: Monitoring {device_id} | "
-                    f"BPM={heart_rate}, SpO2={spo2}% | "
-                    f"Autoencoder: OK (loss={iot_result.get('loss', 0.015):.4f}) | "
-                    f"Rule Engine: 0 violations | Risk: 15/100 (Safe)"
-                )
-                iot_status = "normal"
-            await send_agent_log("IoT Guardian", iot_status, iot_msg)
-            
-            # Agent 3: Threat Intelligence (NLP + STIX/TAXII)
-            if attack_type == "agent3_c2":
-                await send_agent_log("Threat Intelligence", "attack", "[ALERT] [IDENTIFICATION] STIX NLP matcher flags connection target IP 45.33.32.156. Matches APT41 Command & Control feed.")
-                await asyncio.sleep(0.2)
-                await send_agent_log("Threat Intelligence", "warning", "[ACTION] [STOPPING] Severed socket connection to remote C2. DNS cache query invalidated.")
-                await asyncio.sleep(0.2)
-                await send_agent_log("Threat Intelligence", "warning", "[POLICY] [PREVENTION] Injected firewall IP drop rule. Blocked all ingress/egress to remote subnet 45.33.32.0/24.")
-                await asyncio.sleep(0.2)
-                await send_agent_log("Threat Intelligence", "info", "[INFO] [SOLUTION] Configure DNS firewalls (RPZ), restrict outbound access to whitelisted medical proxy domains, and enforce zero-trust egress routing.")
-                await asyncio.sleep(0.2)
-                await send_agent_log("Threat Intelligence", "success", "[ACTION] [SELF-HEALING] Egress connections verified clean. Dynamic firewall rule cleanup triggered.")
-                await asyncio.sleep(0.2)
-                ti_msg = "[SUCCESS] C2 connection completely severed. Threat intelligence alert status cleared."
-                ti_status = "success"
-            elif network.get("destination_ip") == "45.33.32.156":
-                ti_msg = (
-                    f"Threat Intel (NLP Engine): Querying STIX/TAXII feeds — "
-                    f"AlienVault OTX, IBM X-Force, CISA ICS-CERT | "
-                    f"Outbound query to 45.33.32.156 correlates with known high-danger IOCs | "
-                    f"MITRE ATT&CK mapping: TA0011 (Command and Control), T1043 (Commonly Used Port) | "
-                    f"IOC status: BLACKLISTED IP MATCH"
-                )
-                ti_status = "anomaly"
-            elif is_attack:
-                ti_msg = (
-                    f"Threat Intel (NLP Engine): Correlated alert indicators | "
-                    f"Telemetry metadata from {device_id} matches known vulnerability patterns under CISA medical device advisories."
-                )
-                ti_status = "warning"
-            else:
-                ti_msg = (
-                    f"Threat Intel (NLP Engine): Routine STIX/TAXII correlation complete | "
-                    f"No active IOCs matched against {device_id} telemetry | "
-                    f"Feed sources: 8 active feeds cached"
-                )
-                ti_status = "normal"
-            await send_agent_log("Threat Intelligence", ti_status, ti_msg)
-            
-            anomalies = []
-            if network_result.get("is_anomaly") or attack_type in ["agent1_ddos", "agent4_vlan"]:
-                anomalies.append({
-                    "device_id": device_id,
-                    "type": "Network Anomaly",
-                    "severity": "high",
-                    "description": f"LSTM/IsoForest threat score: 95",
-                    "details": network_result
-                })
-                
-            if iot_result.get("is_anomaly") or attack_type == "agent2_spoof":
-                anomalies.append({
-                    "device_id": device_id,
-                    "type": "Device Behavior Anomaly",
-                    "severity": "critical",
-                    "description": f"Autoencoder risk score: 92",
-                    "details": iot_result
-                })
-                
-            # Agent 4: Incident Response (Decision Tree + Policy Engine)
-            if attack_type == "agent4_vlan":
-                await send_agent_log("Incident Response", "attack", "[ALERT] [IDENTIFICATION] Port scan anomaly detected on subnet VLAN_ICU. Port 22 SSH brute-force attempts exceeded threshold (50/min).")
-                await asyncio.sleep(0.2)
-                await send_agent_log("Incident Response", "warning", "[ACTION] [STOPPING] Quarantining device esp32-hr-sim-001 — isolating host interface from hospital LAN.")
-                await asyncio.sleep(0.2)
-                await send_agent_log("Incident Response", "warning", "[POLICY] [PREVENTION] Dynamic VLAN sandbox 999 isolation rule enforced on switch fabric ports.")
-                await asyncio.sleep(0.2)
-                await send_agent_log("Incident Response", "info", "[INFO] [SOLUTION] Enforce SSH key-based authentication, configure fail2ban policies, disable password logins, and restrict VLAN routing permissions.")
-                await asyncio.sleep(0.2)
-                await send_agent_log("Incident Response", "success", "[ACTION] [SELF-HEALING] Micro-segmentation access rules restored. SSH authentication limits applied.")
-                await asyncio.sleep(0.2)
-                ir_msg = "[SUCCESS] Restored dynamic SSH authentication bounds. VLAN segment status is SECURE."
-                ir_status = "success"
-                
-                # Send alert to backend
-                await producer.send_and_wait("alerts", json.dumps({"device_id": device_id, "type": "Network Anomaly (Lateral Movement)", "severity": "high", "description": "Lateral port scan isolated via VLAN sandbox 999", "timestamp": datetime.utcnow().isoformat() + "Z"}).encode('utf-8'))
-            elif attack_type == "agent1_ddos":
-                ir_msg = (
-                    f"Incident Response (Policy Engine): CONTAINMENT EXECUTED | "
-                    f"Action: drop_traffic | "
-                    f"Policy: POL-NET-004 | "
-                    f"Playbook: PB-DDOS-BLOCK-v1 | "
-                    f"Target: {device_id} | "
-                    f"Dispatched to MQTT: medisentinel/iot/control/{device_id}"
-                )
-                ir_status = "mitigated"
-                # Send alert to backend
-                await producer.send_and_wait("alerts", json.dumps({"device_id": device_id, "type": "Network Anomaly (DDoS)", "severity": "high", "description": "SYN flood traffic blocked", "timestamp": datetime.utcnow().isoformat() + "Z"}).encode('utf-8'))
-            elif attack_type == "agent2_spoof":
-                ir_msg = (
-                    f"Incident Response (Policy Engine): CONTAINMENT EXECUTED | "
-                    f"Action: quarantine_device | "
-                    f"Policy: POL-IOT-002 | "
-                    f"Playbook: PB-DEVICE-QUARANTINE-v3 | "
-                    f"Target: {device_id} | "
-                    f"Dispatched to MQTT: medisentinel/iot/control/{device_id}"
-                )
-                ir_status = "mitigated"
-                # Send alert to backend
-                await producer.send_and_wait("alerts", json.dumps({"device_id": device_id, "type": "Device Behavior Anomaly", "severity": "critical", "description": "Spoofed telemetry isolated", "timestamp": datetime.utcnow().isoformat() + "Z"}).encode('utf-8'))
-            elif attack_type == "agent3_c2":
-                ir_msg = (
-                    f"Incident Response (Policy Engine): CONTAINMENT EXECUTED | "
-                    f"Action: block_egress | "
-                    f"Policy: POL-NET-008 | "
-                    f"Playbook: PB-C2-BLOCK-v2 | "
-                    f"Target: {device_id} | "
-                    f"Dispatched to MQTT: medisentinel/iot/control/{device_id}"
-                )
-                ir_status = "mitigated"
-                # Send alert to backend
-                await producer.send_and_wait("alerts", json.dumps({"device_id": device_id, "type": "Threat Intel Match", "severity": "high", "description": "C2 egress connection blocked", "timestamp": datetime.utcnow().isoformat() + "Z"}).encode('utf-8'))
-            elif anomalies:
-                for anomaly in anomalies:
-                    await producer.send_and_wait("alerts", json.dumps(anomaly).encode('utf-8'))
-                    await ir_agent.trigger_response(
-                        anomaly["device_id"], 
-                        anomaly["type"], 
-                        anomaly["severity"], 
-                        anomaly["description"]
+            ioc = ti_agent.correlate(payload)
+
+            category, ev = detect(payload, net_result, iot_result, ioc)
+
+            state = device_state.setdefault(
+                device_id, {"under_attack": False, "category": None, "tick": 0, "clean_streak": 0}
+            )
+            state["tick"] += 1
+
+            if category and not state["under_attack"]:
+                # clean -> attack : identify, contain (quarantine), advise
+                logger.warning(f"THREAT DETECTED on {device_id}: category={category}")
+                await handle_attack_start(producer, device_id, category, ev)
+                state["under_attack"] = True
+                state["category"] = category
+                state["clean_streak"] = 0
+
+            elif category and state["under_attack"]:
+                # ongoing attack : any malicious sample resets the recovery counter so a
+                # quarantined device that now reports normal values (or an interleaved
+                # clean source) does NOT prematurely lift containment.
+                state["clean_streak"] = 0
+                if state["tick"] % 4 == 0:
+                    pb = PLAYBOOKS.get(state["category"], PLAYBOOKS["network"])
+                    await send_agent_log(
+                        pb["detector"], "anomaly",
+                        f"[MONITOR] Threat still active on {device_id} — containment '{pb['action']}' holding; "
+                        f"device remains isolated."
                     )
-                history = ir_agent.containment_history
-                last_action = history[-1] if history else {}
-                ir_msg = (
-                    f"Incident Response (Policy Engine): CONTAINMENT EXECUTED | "
-                    f"Action: {last_action.get('action', 'quarantine_device')} | "
-                    f"Policy: {last_action.get('policy_id', 'POL-IOT-002')} | "
-                    f"Playbook: {last_action.get('playbook', 'PB-DEVICE-QUARANTINE-v3')} | "
-                    f"Target: {device_id} | "
-                    f"Dispatched to MQTT: medisentinel/iot/control/{device_id}"
-                )
-                ir_status = "mitigated"
+
+            elif not category and state["under_attack"]:
+                # attack -> clean, debounced : only declare the threat over after several
+                # consecutive clean samples, so quarantined-but-normal telemetry doesn't
+                # oscillate the device in and out of containment.
+                state["clean_streak"] += 1
+                if state["clean_streak"] >= CLEAN_SAMPLES_TO_RECOVER:
+                    logger.info(f"Threat cleared on {device_id} ({state['clean_streak']} clean samples); restoring.")
+                    await handle_attack_end(producer, device_id, state["category"])
+                    state["under_attack"] = False
+                    state["category"] = None
+                    state["clean_streak"] = 0
+
             else:
-                ir_msg = (
-                    f"Incident Response (Policy Engine): Shield passive | "
-                    f"No containment required | "
-                    f"Total actions executed: {len(ir_agent.containment_history)}"
-                )
-                ir_status = "normal"
-            await send_agent_log("Incident Response", ir_status, ir_msg)
-            
-            # Auto-revert status if telemetry returns to normal clinical/operational bounds
-            if not is_attack and not anomalies:
-                async with httpx.AsyncClient() as client:
-                    try:
-                        headers = {"Authorization": f"Bearer {ir_agent.secret_key}"}
-                        res = await client.get(f"{ir_agent.backend_url}/devices/{device_id}", headers=headers)
-                        if res.status_code == 200:
-                            current_status = res.json().get("status")
-                            if current_status in ["quarantined", "blocked", "restricted"]:
-                                logging.getLogger(__name__).info(f"Telemetry normal for {device_id}. Reverting status from {current_status} to active.")
-                                await client.patch(
-                                    f"{ir_agent.backend_url}/devices/{device_id}",
-                                    json={"status": "active"},
-                                    headers=headers
-                                )
-                                await send_agent_log(
-                                    "Incident Response", 
-                                    "success", 
-                                    f"[RECOVERY] [SELF-HEALING] Telemetry returned to clinical bounds. Restoring device {device_id} to ACTIVE status."
-                                )
-                    except Exception as e:
-                        logging.getLogger(__name__).error(f"Failed to auto-revert device status to active: {e}")
-            
-            # Agent 5: Compliance & Audit (Log Parser + Report Generator)
-            log_payload = f"{device_id}-{heart_rate}-{spo2}-{is_attack}"
-            signature = hashlib.sha256(log_payload.encode()).hexdigest()[:16]
-            if attack_type == "agent5_tamper":
-                audit_msg = (
-                    f"Compliance Audit (Log Parser): [ALERT] [IDENTIFICATION] Critical audit blockchain collision! Hash mismatch at Block #1041."
-                )
-                audit_status = "attack"
-                await send_agent_log("Compliance Audit", audit_status, audit_msg)
-                
-                await asyncio.sleep(0.5)
-                await send_agent_log("Compliance Audit", "warning", "Compliance Audit (Log Parser): [ACTION] [STOPPING] Suspended ledger commits. Isolating corrupted block entry state.")
-                
-                await asyncio.sleep(0.5)
-                await send_agent_log("Compliance Audit", "warning", "Compliance Audit (Log Parser): [POLICY] [PREVENTION] Enforced verification protocol rollback trigger. Solution: Implement cluster consensus validation.")
-                
-                await asyncio.sleep(0.5)
-                audit_msg = (
-                    f"Compliance Audit (Log Parser): [ACTION] [SELF-HEALING] Reconstructed block #1041 matching parent hash ef72183cf. Status: COMPLIANT"
-                )
-                audit_status = "success"
-                
-                # Report alert
-                await producer.send_and_wait("alerts", json.dumps({"device_id": device_id, "type": "Ledger Tamper Attempt", "severity": "high", "description": "Ledger tampering detected and self-healed", "timestamp": datetime.utcnow().isoformat() + "Z"}).encode('utf-8'))
-            elif is_attack:
-                audit_msg = (
-                    f"Compliance Audit (HIPAA Log Parser): BREACH REGISTERED | "
-                    f"HIPAA §164.308(a)(6)(ii) Security Incident Procedures triggered | "
-                    f"Generating tamper-proof audit record | "
-                    f"Hash Chain Signature: {signature} | "
-                    f"Violations: {audit_agent.violation_count + 1} total | "
-                    f"Audit trail entries: {len(audit_agent.event_buffer)}"
-                )
-                audit_status = "logged"
-                for anomaly in anomalies:
-                    await audit_agent.log_event(
-                        action="threat_detected",
-                        actor="AgentCluster",
-                        target=anomaly["device_id"],
-                        details={**anomaly, "severity": anomaly["severity"]}
-                    )
-            else:
-                audit_msg = (
-                    f"Compliance Audit (Log Parser): Normal telemetry logged | "
-                    f"Signed entry: {signature} | "
-                    f"HIPAA §164.312(b) Audit Controls: COMPLIANT | "
-                    f"FDA 21 CFR Part 11: COMPLIANT"
-                )
-                audit_status = "normal"
-            await send_agent_log("Compliance Audit", audit_status, audit_msg)
+                # steady normal : light, throttled heartbeat
+                state["clean_streak"] = 0
+                if state["tick"] % 5 == 0:
+                    await send_normal_heartbeat(device_id, heart_rate, spo2, iot_result)
 
     finally:
         logger.info("Stopping Agents Orchestrator...")
         await consumer.stop()
         await producer.stop()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -147,6 +147,62 @@ class IncidentResponseAgent:
             except Exception as e:
                 logger.error(f"Incident Response Agent failed to reach backend: {e}")
     
+    async def contain(self, device_id: str, status: str, action: str, policy_id: str, playbook: str) -> bool:
+        """
+        Execute a containment action by transitioning the device to a protective
+        status (quarantined / blocked / restricted). The backend PATCH publishes
+        an MQTT control message to the device, so the physical ESP32 LCD reacts.
+
+        Returns True if the backend accepted the status change.
+        """
+        self.containment_history.append({
+            "timestamp": datetime.utcnow().isoformat(),
+            "device_id": device_id,
+            "action": action,
+            "policy_id": policy_id,
+            "playbook": playbook,
+            "status": status,
+        })
+
+        headers = {"Authorization": f"Bearer {self.secret_key}"}
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.patch(
+                    f"{self.backend_url}/devices/{device_id}",
+                    json={"status": status},
+                    headers=headers,
+                    timeout=5.0,
+                )
+                if resp.status_code in (200, 201):
+                    logger.warning(f"[CONTAINMENT] {action} on {device_id} → status '{status}' ({policy_id})")
+                    return True
+                logger.error(f"Containment PATCH failed for {device_id}: {resp.status_code} {resp.text}")
+                return False
+            except Exception as e:
+                logger.error(f"Incident Response failed to contain {device_id}: {e}")
+                return False
+
+    async def restore(self, device_id: str) -> bool:
+        """Clear containment — transition the device back to 'active' once the
+        threat has cleared. Drives the ESP32 LCD back to SECURE."""
+        headers = {"Authorization": f"Bearer {self.secret_key}"}
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.patch(
+                    f"{self.backend_url}/devices/{device_id}",
+                    json={"status": "active"},
+                    headers=headers,
+                    timeout=5.0,
+                )
+                if resp.status_code in (200, 201):
+                    logger.info(f"[RECOVERY] Restored {device_id} → status 'active'")
+                    return True
+                logger.error(f"Restore PATCH failed for {device_id}: {resp.status_code} {resp.text}")
+                return False
+            except Exception as e:
+                logger.error(f"Incident Response failed to restore {device_id}: {e}")
+                return False
+
     def get_containment_stats(self) -> dict:
         """Returns containment statistics for the dashboard."""
         return {

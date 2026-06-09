@@ -2,7 +2,13 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <HTTPUpdate.h>   // real OTA: download + flash firmware image
 #include "MAX30100_PulseOximeter.h"
+
+// Firmware version — set per build via platformio build_flags (-DFW_VERSION=...).
+#ifndef FW_VERSION
+#define FW_VERSION "v1.0.0"
+#endif
 
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
@@ -10,6 +16,8 @@
 
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
+
+#include "mbedtls/md.h"   // HMAC-SHA256 for secure firmware update verification
 
 // =====================================================
 // FORWARD DECLARATIONS
@@ -20,19 +28,34 @@ void updateStatus(const char* status, uint16_t color);
 void updateLog(const char* logMsg, uint16_t color);
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void printWrappedText(int startX, int startY, int maxCharsPerLine, int maxLines, const char* text);
+String computeHMAC(const String& message);
+void publishFirmwareAck(const char* version, const char* status);
+void performOTA(const char* version, const char* url, bool isRollback);
 
 // =====================================================
-// WIFI & MQTT
+// WIFI & MQTT  ---  EDIT THESE FOR YOUR NETWORK
 // =====================================================
-const char* ssid = "Nuvvu Kavalayya";
-const char* password = "23277868";
-const char* mqtt_server = "10.195.152.157";
-const int mqtt_port = 1883;
+//  ssid / password : your 2.4 GHz WiFi (ESP32 has no 5 GHz radio)
+//  mqtt_server      : IP address of the computer running the Docker
+//                     stack (the MediSentinel MQTT broker). Find it with
+//                     `hostname -I` on that machine. NOT 127.0.0.1 — the
+//                     ESP32 must reach it over the LAN. Port 1883 must be
+//                     free on the host (stop any host-level mosquitto).
+const char* ssid = "vaii";
+const char* password = "nahipata";
+const char* mqtt_server = "10.217.106.157";  // laptop's LAN IP on 'Sri Krishna Pg 41' (Docker host running the MQTT broker)
+const int mqtt_port = 18833;
 
 const char* device_id = "esp32-hr-sim-001";
 const char* mqtt_topic_telemetry = "medisentinel/iot/telemetry";
 const char* mqtt_topic_discovery = "medisentinel/iot/discovery";
 const char* mqtt_topic_toggle = "medisentinel/iot/attack/toggle";
+const char* mqtt_topic_fw_ack  = "medisentinel/iot/firmware/ack";
+
+// Shared HMAC key for verifying secure firmware updates — MUST match the backend
+// FIRMWARE_SIGNING_KEY. The device only applies an image whose signature it can
+// recompute, so forged/unauthorized firmware pushes are rejected.
+const char* FW_SIGN_KEY = "medisentinel_fw_signing_key_2026";
 
 // =====================================================
 // TFT PINS
@@ -59,9 +82,17 @@ bool isQuarantined = false;
 bool sensorAvailable = false;
 bool attackSimulationActive = false;
 
+// Running firmware version (compiled in; changes after a real OTA reboot).
+char firmwareVersion[16] = FW_VERSION;
+
 // UI State
 float lastHR = -1;
 float lastSpO2 = -1;
+
+// Smoothing filters for the noisy MAX30100 readings (EMA) — kept stable so the
+// displayed HR/SpO2 don't jump around between samples.
+float hrEMA = 0;
+float spo2EMA = 0;
 char currentStatusStr[32] = "INITIALIZING";
 uint16_t currentStatusColor = ST77XX_WHITE;
 
@@ -81,10 +112,11 @@ void drawUI() {
     
     // Header
     tft.fillRect(0, 0, 160, 16, ST77XX_BLUE);
-    tft.setCursor(15, 4);
+    tft.setCursor(6, 4);
     tft.setTextColor(ST77XX_WHITE);
     tft.setTextSize(1);
-    tft.println("MediSentinel Shield");
+    tft.print("MediSentinel ");
+    tft.print(firmwareVersion);
 
     // Dividers
     tft.drawLine(0, 16, 160, 16, ST77XX_WHITE);
@@ -191,7 +223,8 @@ void updateVitals(float hr, float spo2) {
 
 void updateStatus(const char* status, uint16_t color) {
     if (strcmp(status, currentStatusStr) == 0 && color == currentStatusColor) return;
-    strncpy(currentStatusStr, status, sizeof(currentStatusStr));
+    strncpy(currentStatusStr, status, sizeof(currentStatusStr) - 1);
+    currentStatusStr[sizeof(currentStatusStr) - 1] = '\0';
     currentStatusColor = color;
     
     tft.fillRect(82, 40, 76, 32, ST77XX_BLACK);
@@ -210,6 +243,67 @@ void updateLog(const char* logMsg, uint16_t color) {
 }
 
 // =====================================================
+// SECURE FIRMWARE HELPERS
+// =====================================================
+
+// HMAC-SHA256(message) using the shared FW_SIGN_KEY, returned as lowercase hex.
+String computeHMAC(const String& message) {
+    byte hmacResult[32];
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+    mbedtls_md_hmac_starts(&ctx, (const unsigned char*)FW_SIGN_KEY, strlen(FW_SIGN_KEY));
+    mbedtls_md_hmac_update(&ctx, (const unsigned char*)message.c_str(), message.length());
+    mbedtls_md_hmac_finish(&ctx, hmacResult);
+    mbedtls_md_free(&ctx);
+
+    String hex = "";
+    for (int i = 0; i < 32; i++) {
+        char b[3];
+        sprintf(b, "%02x", hmacResult[i]);
+        hex += b;
+    }
+    return hex;
+}
+
+void publishFirmwareAck(const char* version, const char* status) {
+    StaticJsonDocument<192> ack;
+    ack["device_id"] = device_id;
+    ack["version"] = version;
+    ack["status"] = status;
+    char buffer[192];
+    serializeJson(ack, buffer);
+    client.publish(mqtt_topic_fw_ack, buffer);
+}
+
+// Download the firmware image from `url` over HTTP and flash it to the inactive OTA
+// partition. On success the ESP32 reboots into the new image automatically; on the
+// next boot it reports the new FW_VERSION (which confirms the update to the backend).
+void performOTA(const char* version, const char* url, bool isRollback) {
+    char buf[56];
+    snprintf(buf, sizeof(buf), "%s -> %s", isRollback ? "Rollback" : "OTA update", version);
+    updateStatus(isRollback ? "ROLLING BACK" : "UPDATING FW", ST77XX_CYAN);
+    updateLog(buf, ST77XX_CYAN);
+    updateLog("Downloading & flashing image...", ST77XX_CYAN);
+
+    WiFiClient otaClient;
+    httpUpdate.rebootOnUpdate(true);
+    t_httpUpdate_return ret = httpUpdate.update(otaClient, String(url));
+
+    // Only reached on failure (a successful flash reboots into the new firmware).
+    if (ret == HTTP_UPDATE_FAILED) {
+        char err[64];
+        snprintf(err, sizeof(err), "OTA FAILED: %s", httpUpdate.getLastErrorString().c_str());
+        updateStatus("OTA FAILED", ST77XX_RED);
+        updateLog(err, ST77XX_RED);
+        publishFirmwareAck(version, "failed");
+    } else if (ret == HTTP_UPDATE_NO_UPDATES) {
+        updateLog("OTA: no update returned by server", ST77XX_ORANGE);
+        publishFirmwareAck(version, "failed");
+    }
+}
+
+// =====================================================
 // MQTT CALLBACK
 // =====================================================
 
@@ -223,6 +317,15 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     StaticJsonDocument<512> doc;
     DeserializationError error = deserializeJson(doc, message);
     
+    Serial.print("MQTT Topic: ");
+    Serial.println(topic);
+    Serial.print("MQTT Payload: ");
+    Serial.println(message);
+    if (error) {
+        Serial.print("JSON Error: ");
+        Serial.println(error.c_str());
+    }
+
     if (!error) {
         if (strcmp(topic, mqtt_topic_toggle) == 0) {
             attackSimulationActive = doc["attack_active"];
@@ -233,7 +336,28 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             }
         } 
         else if (strcmp(topic, "medisentinel/iot/control/esp32-hr-sim-001") == 0) {
-            if (doc.containsKey("agent_name")) {
+            if (doc.containsKey("action")) {
+                // ---- Real secure OTA: update / rollback ----
+                const char* action = doc["action"];
+                const char* version = doc["version"] | "";
+                const char* url = doc["url"] | "";
+                const char* sig = doc["signature"] | "";
+
+                if (strcmp(action, "firmware_update") != 0 && strcmp(action, "firmware_rollback") != 0) {
+                    return;
+                }
+
+                // Authorise the command: HMAC over "device_id:version:url".
+                String expected = computeHMAC(String(device_id) + ":" + String(version) + ":" + String(url));
+                if (expected != String(sig) || strlen(url) == 0) {
+                    updateLog("Firmware REJECTED: invalid signature", ST77XX_RED);
+                    publishFirmwareAck(version, "rejected");
+                    return;
+                }
+
+                performOTA(version, url, strcmp(action, "firmware_rollback") == 0);
+            }
+            else if (doc.containsKey("agent_name")) {
                 const char* status = doc["status"];
                 const char* msg = doc["message"];
                 
@@ -247,21 +371,34 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             } 
             else if (doc.containsKey("status")) {
                 const char* status = doc["status"];
-                if (strcmp(status, "quarantined") == 0) {
-                    isQuarantined = true;
-                    updateStatus("QUARANTINED (ISOLATED)", ST77XX_ORANGE);
-                } else if (strcmp(status, "active") == 0 || strcmp(status, "online") == 0) {
+                if (strcmp(status, "active") == 0 || strcmp(status, "online") == 0) {
+                    // Cleared by the AI agents — back to normal operation
                     isQuarantined = false;
                     updateStatus("SECURE", ST77XX_GREEN);
                     updateLog("System restored to normal operation.", ST77XX_GREEN);
+                } else if (strcmp(status, "quarantined") == 0) {
+                    isQuarantined = true;
+                    updateStatus("QUARANTINED (ISOLATED)", ST77XX_ORANGE);
+                } else if (strcmp(status, "blocked") == 0) {
+                    isQuarantined = true;
+                    updateStatus("TRAFFIC BLOCKED", ST77XX_RED);
+                } else if (strcmp(status, "restricted") == 0) {
+                    isQuarantined = true;
+                    updateStatus("EGRESS RESTRICTED", ST77XX_ORANGE);
+                } else {
+                    // Any other non-active status => contained by the agents
+                    isQuarantined = true;
+                    updateStatus("CONTAINED", ST77XX_ORANGE);
                 }
             }
         } 
         else if (strcmp(topic, mqtt_topic_telemetry) == 0) {
-            float hr = doc["heart_rate"];
-            float spo2 = doc["spo2"];
-            // Display MQTT telemetry if local sensor is missing, or if it has no valid reading (meaning no finger on it)
-            if (!sensorAvailable || pox.getHeartRate() < 40 || pox.getHeartRate() > 180) {
+            // Receiver mode ONLY: if this unit has no local sensor it mirrors another
+            // device's telemetry. With a local sensor we ignore the bus and show our
+            // own readings (prevents echoed/attacker values polluting the display).
+            if (!sensorAvailable) {
+                float hr = doc["heart_rate"];
+                float spo2 = doc["spo2"];
                 tsLastMQTTTelemetry = millis();
                 updateVitals(hr, spo2);
             }
@@ -295,6 +432,7 @@ void reconnect() {
         doc["device_id"] = device_id;
         doc["device_type"] = "HeartRateMonitor";
         doc["status"] = "online";
+        doc["firmware"] = firmwareVersion;
         char buffer[256];
         serializeJson(doc, buffer);
         
@@ -338,7 +476,9 @@ void setup() {
         sensorAvailable = false;
     } else {
         sensorAvailable = true;
-        pox.setIRLedCurrent(MAX30100_LED_CURR_7_6MA);
+        // Higher IR LED current => stronger signal / better SpO2 + HR accuracy than
+        // the 7.6 mA example default (lower it again if your readings saturate).
+        pox.setIRLedCurrent(MAX30100_LED_CURR_11MA);
         pox.setOnBeatDetectedCallback(onBeatDetected);
     }
 
@@ -378,35 +518,44 @@ void loop() {
     }
 
     if (sensorAvailable && (millis() - tsLastReport > REPORTING_PERIOD_MS)) {
-        float hr = pox.getHeartRate();
-        float spo2 = pox.getSpO2();
+        float rawHr = pox.getHeartRate();
+        float rawSpo2 = pox.getSpO2();
+        bool hasFinger = (rawHr > 30.0 && rawHr < 220.0 && rawSpo2 > 50.0);
 
-        bool hasFinger = (hr > 30.0 && hr < 220.0 && spo2 > 50.0);
-        if (!hasFinger) {
-            hr = 0;
-            spo2 = 0;
-        }
-
-        if (attackSimulationActive) {
+        float hr, spo2;
+        if (attackSimulationActive && !isQuarantined) {
+            // Under an ACTIVE (not-yet-contained) attack the device telemetry is
+            // spoofed — these are the "ruined" values. Once the agents quarantine
+            // the device (isQuarantined), we stop spoofing and resume real readings.
             hr = random(210, 230);
             spo2 = random(80, 84);
+            hrEMA = 0;
+            spo2EMA = 0;  // reset filters so real values re-stabilise after the attack
+        } else if (hasFinger) {
+            // Smooth the noisy sensor with an EMA for a stable, accurate display.
+            hrEMA   = (hrEMA   == 0) ? rawHr   : (0.75f * hrEMA   + 0.25f * rawHr);
+            spo2EMA = (spo2EMA == 0) ? rawSpo2 : (0.75f * spo2EMA + 0.25f * rawSpo2);
+            hr = hrEMA;
+            spo2 = spo2EMA;
         } else {
-            if (hr < 40 || hr > 180) hr = 0;
-            if (spo2 < 70 || spo2 > 100) spo2 = 0;
+            // No finger on the sensor.
+            hr = 0;
+            spo2 = 0;
+            hrEMA = 0;
+            spo2EMA = 0;
         }
 
-        // Only update local vitals on screen if we have a valid local reading,
-        // or if we haven't received any MQTT telemetry in the last 5 seconds.
-        if (hr > 0 || (millis() - tsLastMQTTTelemetry > 5000)) {
-            updateVitals(hr, spo2);
-        }
+        // With a local sensor we always display our OWN reading (never the MQTT
+        // telemetry echoed back on the bus, which would show another source's value).
+        updateVitals(hr, spo2);
 
-        StaticJsonDocument<256> doc;
+        StaticJsonDocument<384> doc;
         doc["device_id"] = device_id;
         doc["heart_rate"] = hr;
         doc["spo2"] = spo2;
         doc["timestamp"] = millis();
-        
+        doc["firmware"] = firmwareVersion;
+
         JsonObject network = doc.createNestedObject("network");
         network["packet_rate"] = attackSimulationActive ? 130 : 15;
         network["byte_rate"] = attackSimulationActive ? 14000 : 1300;

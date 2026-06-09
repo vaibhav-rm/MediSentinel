@@ -29,6 +29,9 @@ mosquitto-logs/
 backend-data/
 *.log
 
+# Uploaded OTA firmware images (binaries)
+backend/firmware_images/
+
 # OS generated files
 .DS_Store
 .DS_Store?

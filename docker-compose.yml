@@ -45,7 +45,10 @@ services:
     image: eclipse-mosquitto:2.0
     container_name: medisentinel-mqtt
     ports:
-      - "1883:1883"
+      # Host 1883 is required for the physical ESP32 to publish over the LAN.
+      # If a host-level mosquitto already owns 1883, stop it first
+      # (`sudo systemctl stop mosquitto`) or temporarily map "1884:1883".
+      - "18833:1883"
       - "9001:9001"
     volumes:
       - ./infrastructure/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
@@ -111,12 +114,17 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - PYTHONPATH=/app
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - MQTT_BROKER_HOST=mqtt-broker
       - MQTT_BROKER_PORT=1883
       - SECRET_KEY=${SECRET_KEY:-medisentinel_super_secret_key_change_in_prod}
       - DATABASE_URL=postgresql+asyncpg://medi_user:medi_password@postgres:5432/medisentinel
       - REDIS_URL=redis://redis:6379/0
+      # Base URL the ESP32 uses to DOWNLOAD OTA images — must be the Docker host's
+      # LAN IP (same network as the device), not localhost.
+      - OTA_BASE_URL=${OTA_BASE_URL:-http://10.217.106.157:8000}
+      - FIRMWARE_SIGNING_KEY=${FIRMWARE_SIGNING_KEY:-medisentinel_fw_signing_key_2026}
     volumes:
       - ./backend:/app
     networks:
