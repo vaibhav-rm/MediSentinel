@@ -44,6 +44,8 @@ services:
   mqtt-broker:
     image: eclipse-mosquitto:2.0
     container_name: medisentinel-mqtt
+    security_opt:
+      - label=disable
     ports:
       # Host 1883 is required for the physical ESP32 to publish over the LAN.
       # If a host-level mosquitto already owns 1883, stop it first
@@ -102,6 +104,8 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: medisentinel-backend
+    security_opt:
+      - label=disable
     depends_on:
       kafka:
         condition: service_healthy
@@ -137,6 +141,8 @@ services:
       context: ./agents
       dockerfile: Dockerfile
     container_name: medisentinel-agents
+    security_opt:
+      - label=disable
     depends_on:
       kafka:
         condition: service_healthy

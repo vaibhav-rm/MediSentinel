@@ -31,6 +31,14 @@ void printWrappedText(int startX, int startY, int maxCharsPerLine, int maxLines,
 String computeHMAC(const String& message);
 void publishFirmwareAck(const char* version, const char* status);
 void performOTA(const char* version, const char* url, bool isRollback);
+void drawDashboardPage();
+void drawNetworkPage();
+void drawSecurityPage();
+void drawDeviceInfoPage();
+void drawMenuPage(uint8_t page);
+void beep(int duration);
+void handleButton1Press();
+void handleButton2Press();
 
 // =====================================================
 // WIFI & MQTT  ---  EDIT THESE FOR YOUR NETWORK
@@ -41,9 +49,9 @@ void performOTA(const char* version, const char* url, bool isRollback);
 //                     `hostname -I` on that machine. NOT 127.0.0.1 — the
 //                     ESP32 must reach it over the LAN. Port 1883 must be
 //                     free on the host (stop any host-level mosquitto).
-const char* ssid = "vaii";
-const char* password = "nahipata";
-const char* mqtt_server = "10.217.106.157";  // laptop's LAN IP on 'Sri Krishna Pg 41' (Docker host running the MQTT broker)
+const char* ssid = "Sri Krishna Pg 41";
+const char* password = "srikrishnafour";
+const char* mqtt_server = "192.168.0.130";  // laptop's LAN IP on 'Sri Krishna Pg 41' (Docker host running the MQTT broker)
 const int mqtt_port = 18833;
 
 const char* device_id = "esp32-hr-sim-001";
@@ -58,11 +66,14 @@ const char* mqtt_topic_fw_ack  = "medisentinel/iot/firmware/ack";
 const char* FW_SIGN_KEY = "medisentinel_fw_signing_key_2026";
 
 // =====================================================
-// TFT PINS
+// TFT, BUTTONS, & BUZZER PINS
 // =====================================================
 #define TFT_CS    5
 #define TFT_RST   4
 #define TFT_DC    2
+#define BUTTON1   26
+#define BUTTON2   27
+#define BUZZER    25
 
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 
@@ -84,6 +95,18 @@ bool attackSimulationActive = false;
 
 // Running firmware version (compiled in; changes after a real OTA reboot).
 char firmwareVersion[16] = FW_VERSION;
+
+// Power Saving and Menu State
+bool screenOn = true;
+uint8_t currentMenuPage = 0;
+unsigned long lastActivityTime = 0;
+const unsigned long INACTIVITY_TIMEOUT = 10000; // 10 seconds
+
+// Cached variables for redrawing UI
+float globalHR = 0.0;
+float globalSpO2 = 0.0;
+char currentLogStr[128] = "System online and monitoring...";
+uint16_t currentLogColor = ST77XX_WHITE;
 
 // UI State
 float lastHR = -1;
@@ -107,7 +130,13 @@ void onBeatDetected() {
 // UI UPDATE FUNCTIONS
 // =====================================================
 
-void drawUI() {
+void beep(int duration) {
+    digitalWrite(BUZZER, HIGH);
+    delay(duration);
+    digitalWrite(BUZZER, LOW);
+}
+
+void drawDashboardPage() {
     tft.fillScreen(ST77XX_BLACK);
     
     // Header
@@ -140,10 +169,210 @@ void drawUI() {
     tft.setTextColor(ST77XX_CYAN);
     tft.print("Latest Agent Log:");
     
-    // Initial Values
-    updateVitals(0, 0);
-    updateStatus("SECURE", ST77XX_GREEN);
-    updateLog("System online and monitoring...", ST77XX_WHITE);
+    // Force redraw of vitals, status, and log
+    lastHR = -2.0; 
+    lastSpO2 = -2.0;
+    updateVitals(globalHR, globalSpO2);
+    
+    tft.fillRect(82, 40, 76, 32, ST77XX_BLACK);
+    tft.setTextColor(currentStatusColor);
+    tft.setTextSize(1);
+    printWrappedText(82, 40, 12, 4, currentStatusStr);
+
+    tft.fillRect(0, 102, 160, 26, ST77XX_BLACK);
+    tft.setTextColor(currentLogColor);
+    tft.setTextSize(1);
+    printWrappedText(2, 104, 26, 3, currentLogStr);
+}
+
+void drawNetworkPage() {
+    tft.fillScreen(ST77XX_BLACK);
+    
+    // Header
+    tft.fillRect(0, 0, 160, 16, ST77XX_BLUE);
+    tft.setCursor(6, 4);
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setTextSize(1);
+    tft.print("Network Info");
+    tft.drawLine(0, 16, 160, 16, ST77XX_WHITE);
+
+    tft.setTextSize(1);
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 25);
+    tft.print("SSID: ");
+    tft.setTextColor(ST77XX_WHITE);
+    tft.print(ssid);
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 40);
+    tft.print("IP: ");
+    tft.setTextColor(ST77XX_WHITE);
+    if (WiFi.status() == WL_CONNECTED) {
+        tft.print(WiFi.localIP().toString());
+    } else {
+        tft.print("Disconnected");
+    }
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 55);
+    tft.print("MQTT Broker: ");
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setCursor(5, 68);
+    tft.print(mqtt_server);
+    tft.print(":");
+    tft.print(mqtt_port);
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 85);
+    tft.print("MQTT Client: ");
+    tft.setTextColor(client.connected() ? ST77XX_GREEN : ST77XX_RED);
+    tft.print(client.connected() ? "CONNECTED" : "DISCONNECTED");
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 105);
+    tft.print("Signal RSSI: ");
+    tft.setTextColor(ST77XX_WHITE);
+    if (WiFi.status() == WL_CONNECTED) {
+        tft.print(WiFi.RSSI());
+        tft.print(" dBm");
+    } else {
+        tft.print("N/A");
+    }
+}
+
+void drawSecurityPage() {
+    tft.fillScreen(ST77XX_BLACK);
+    
+    // Header
+    tft.fillRect(0, 0, 160, 16, ST77XX_BLUE);
+    tft.setCursor(6, 4);
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setTextSize(1);
+    tft.print("Security Details");
+    tft.drawLine(0, 16, 160, 16, ST77XX_WHITE);
+
+    tft.setTextSize(1);
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 25);
+    tft.print("Device Status: ");
+    if (isQuarantined) {
+        tft.setTextColor(ST77XX_RED);
+        tft.print("QUARANTINED");
+    } else {
+        tft.setTextColor(ST77XX_GREEN);
+        tft.print("SECURE");
+    }
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 40);
+    tft.print("Attack Sim: ");
+    if (attackSimulationActive) {
+        tft.setTextColor(ST77XX_RED);
+        tft.print("ACTIVE");
+    } else {
+        tft.setTextColor(ST77XX_GREEN);
+        tft.print("INACTIVE");
+    }
+
+    tft.setTextColor(ST77XX_YELLOW);
+    tft.setCursor(5, 60);
+    tft.print("--- Traffic Stats ---");
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 75);
+    tft.print("Packet Rate: ");
+    tft.setTextColor(ST77XX_WHITE);
+    tft.print(attackSimulationActive ? "130 pkts/s" : "15 pkts/s");
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 90);
+    tft.print("Byte Rate: ");
+    tft.setTextColor(ST77XX_WHITE);
+    tft.print(attackSimulationActive ? "14000 B/s" : "1300 B/s");
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 105);
+    tft.print("Jitter: ");
+    tft.setTextColor(ST77XX_WHITE);
+    tft.print(attackSimulationActive ? "40 ms" : "4 ms");
+}
+
+void drawDeviceInfoPage() {
+    tft.fillScreen(ST77XX_BLACK);
+    
+    // Header
+    tft.fillRect(0, 0, 160, 16, ST77XX_BLUE);
+    tft.setCursor(6, 4);
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setTextSize(1);
+    tft.print("System Info");
+    tft.drawLine(0, 16, 160, 16, ST77XX_WHITE);
+
+    tft.setTextSize(1);
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 25);
+    tft.print("Device ID: ");
+    tft.setTextColor(ST77XX_WHITE);
+    tft.print(device_id);
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 40);
+    tft.print("Firmware Ver: ");
+    tft.setTextColor(ST77XX_GREEN);
+    tft.print(firmwareVersion);
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 55);
+    tft.print("MAX30100 Sensor: ");
+    if (sensorAvailable) {
+        tft.setTextColor(ST77XX_GREEN);
+        tft.print("FOUND & OK");
+    } else {
+        tft.setTextColor(ST77XX_RED);
+        tft.print("NOT FOUND");
+    }
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 70);
+    tft.print("FW Verification: ");
+    tft.setTextColor(ST77XX_WHITE);
+    tft.print("HMAC-SHA256");
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 85);
+    tft.print("HMAC Key Signature: ");
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setCursor(5, 95);
+    tft.print("medisentinel_fw..."); // Masked for UI
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(5, 110);
+    tft.print("Uptime: ");
+    tft.setTextColor(ST77XX_WHITE);
+    tft.print(millis() / 1000);
+    tft.print("s");
+}
+
+void drawMenuPage(uint8_t page) {
+    if (!screenOn) return;
+    switch (page) {
+        case 0:
+            drawDashboardPage();
+            break;
+        case 1:
+            drawNetworkPage();
+            break;
+        case 2:
+            drawSecurityPage();
+            break;
+        case 3:
+            drawDeviceInfoPage();
+            break;
+    }
+}
+
+void drawUI() {
+    drawDashboardPage();
 }
 
 void printWrappedText(int startX, int startY, int maxCharsPerLine, int maxLines, const char* text) {
@@ -202,6 +431,10 @@ void printWrappedText(int startX, int startY, int maxCharsPerLine, int maxLines,
 }
 
 void updateVitals(float hr, float spo2) {
+    globalHR = hr;
+    globalSpO2 = spo2;
+
+    if (!screenOn || currentMenuPage != 0) return;
     if (hr == lastHR && spo2 == lastSpO2) return;
     lastHR = hr;
     lastSpO2 = spo2;
@@ -222,10 +455,11 @@ void updateVitals(float hr, float spo2) {
 }
 
 void updateStatus(const char* status, uint16_t color) {
-    if (strcmp(status, currentStatusStr) == 0 && color == currentStatusColor) return;
     strncpy(currentStatusStr, status, sizeof(currentStatusStr) - 1);
     currentStatusStr[sizeof(currentStatusStr) - 1] = '\0';
     currentStatusColor = color;
+    
+    if (!screenOn || currentMenuPage != 0) return;
     
     tft.fillRect(82, 40, 76, 32, ST77XX_BLACK);
     tft.setTextColor(color);
@@ -235,6 +469,12 @@ void updateStatus(const char* status, uint16_t color) {
 }
 
 void updateLog(const char* logMsg, uint16_t color) {
+    strncpy(currentLogStr, logMsg, sizeof(currentLogStr) - 1);
+    currentLogStr[sizeof(currentLogStr) - 1] = '\0';
+    currentLogColor = color;
+
+    if (!screenOn || currentMenuPage != 0) return;
+    
     tft.fillRect(0, 102, 160, 26, ST77XX_BLACK);
     tft.setTextColor(color);
     tft.setTextSize(1);
@@ -393,17 +633,51 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             }
         } 
         else if (strcmp(topic, mqtt_topic_telemetry) == 0) {
-            // Receiver mode ONLY: if this unit has no local sensor it mirrors another
-            // device's telemetry. With a local sensor we ignore the bus and show our
-            // own readings (prevents echoed/attacker values polluting the display).
-            if (!sensorAvailable) {
-                float hr = doc["heart_rate"];
-                float spo2 = doc["spo2"];
+            // Mirror the MQTT telemetry if:
+            // 1. We have no physical sensor (sensorAvailable == false)
+            // 2. Or we have a physical sensor, but there is currently no active finger reading on it (hrEMA and spo2EMA are 0)
+            float hr = doc["heart_rate"];
+            float spo2 = doc["spo2"];
+            bool incomingHasVitals = (hr > 30.0 && spo2 > 50.0);
+            bool localHasVitals = (hrEMA > 30.0 || spo2EMA > 50.0);
+            
+            if (!sensorAvailable || (!localHasVitals && incomingHasVitals)) {
                 tsLastMQTTTelemetry = millis();
                 updateVitals(hr, spo2);
             }
         }
     }
+}
+
+void handleButton1Press() {
+    beep(80);
+    lastActivityTime = millis();
+    if (!screenOn) {
+        // Wake display
+        tft.sendCommand(ST77XX_SLPOUT);
+        tft.sendCommand(ST77XX_DISPON);
+        screenOn = true;
+        drawMenuPage(currentMenuPage);
+        Serial.println("Screen woken up by Button 1");
+    } else {
+        // Put display to sleep immediately (Power off)
+        tft.sendCommand(ST77XX_SLPIN);
+        tft.sendCommand(ST77XX_DISPOFF);
+        screenOn = false;
+        Serial.println("Screen turned off by Button 1");
+    }
+}
+
+void handleButton2Press() {
+    if (!screenOn) {
+        return;
+    }
+    beep(80);
+    lastActivityTime = millis();
+    currentMenuPage = (currentMenuPage + 1) % 4;
+    drawMenuPage(currentMenuPage);
+    Serial.print("Menu scrolled to: ");
+    Serial.println(currentMenuPage);
 }
 
 // =====================================================
@@ -453,11 +727,24 @@ void setup() {
     WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
     Serial.begin(115200);
 
+    // Initialize button and buzzer pins
+    pinMode(BUTTON1, INPUT_PULLUP);
+    pinMode(BUTTON2, INPUT_PULLUP);
+    pinMode(BUZZER, OUTPUT);
+    digitalWrite(BUZZER, LOW);
+
+    // Startup beep sequence
+    beep(150);
+    delay(200);
+    beep(150);
+
+    lastActivityTime = millis();
+
     Wire.begin(21, 22);
     Wire.setClock(100000);
 
     tft.initR(INITR_BLACKTAB);
-    tft.setRotation(1);
+    tft.setRotation(3);
     tft.setTextWrap(false);
     
     // Initial Boot Screen
@@ -505,24 +792,63 @@ void loop() {
     reconnect();
     client.loop();
 
+    // Button 1 Input & Debounce (Power / Wake)
+    static unsigned long lastBtn1Time = 0;
+    if (digitalRead(BUTTON1) == LOW) {
+        if (millis() - lastBtn1Time > 250) {
+            lastBtn1Time = millis();
+            handleButton1Press();
+        }
+    }
+
+    // Button 2 Input & Debounce (Menu scroll)
+    static unsigned long lastBtn2Time = 0;
+    if (digitalRead(BUTTON2) == LOW) {
+        if (millis() - lastBtn2Time > 250) {
+            lastBtn2Time = millis();
+            handleButton2Press();
+        }
+    }
+
+    // Screen Inactivity Auto-Off (Disabled per user request)
+    /*
+    if (screenOn && (millis() - lastActivityTime >= INACTIVITY_TIMEOUT)) {
+        tft.sendCommand(ST77XX_SLPIN);
+        tft.sendCommand(ST77XX_DISPOFF);
+        screenOn = false;
+        Serial.println("Screen disabled (inactivity)");
+    }
+    */
+
+    // Periodic Dynamic Menu Refresh (Pages 1, 2, 3)
+    static unsigned long lastScreenRefresh = 0;
+    if (screenOn && currentMenuPage != 0 && (millis() - lastScreenRefresh > 2000)) {
+        lastScreenRefresh = millis();
+        drawMenuPage(currentMenuPage);
+    }
+
     if (sensorAvailable) {
         pox.update();
     }
 
     if (beatDetected) {
         beatDetected = false;
-        tft.fillCircle(145, 10, 5, ST77XX_RED);
-        delay(20);
-        tft.fillCircle(145, 10, 5, ST77XX_BLACK);
-        tft.drawCircle(145, 10, 5, ST77XX_RED);
+        lastActivityTime = millis(); // Reset inactivity timer on oximeter beat detection
+        if (screenOn && currentMenuPage == 0) {
+            tft.fillCircle(145, 10, 5, ST77XX_RED);
+            delay(20);
+            tft.fillCircle(145, 10, 5, ST77XX_BLACK);
+            tft.drawCircle(145, 10, 5, ST77XX_RED);
+        }
     }
 
     if (sensorAvailable && (millis() - tsLastReport > REPORTING_PERIOD_MS)) {
         float rawHr = pox.getHeartRate();
         float rawSpo2 = pox.getSpO2();
-        bool hasFinger = (rawHr > 30.0 && rawHr < 220.0 && rawSpo2 > 50.0);
 
-        float hr, spo2;
+        float hr = 0;
+        float spo2 = 0;
+
         if (attackSimulationActive && !isQuarantined) {
             // Under an ACTIVE (not-yet-contained) attack the device telemetry is
             // spoofed — these are the "ruined" values. Once the agents quarantine
@@ -530,24 +856,31 @@ void loop() {
             hr = random(210, 230);
             spo2 = random(80, 84);
             hrEMA = 0;
-            spo2EMA = 0;  // reset filters so real values re-stabilise after the attack
-        } else if (hasFinger) {
-            // Smooth the noisy sensor with an EMA for a stable, accurate display.
-            hrEMA   = (hrEMA   == 0) ? rawHr   : (0.75f * hrEMA   + 0.25f * rawHr);
-            spo2EMA = (spo2EMA == 0) ? rawSpo2 : (0.75f * spo2EMA + 0.25f * rawSpo2);
-            hr = hrEMA;
-            spo2 = spo2EMA;
-        } else {
-            // No finger on the sensor.
-            hr = 0;
-            spo2 = 0;
-            hrEMA = 0;
             spo2EMA = 0;
+        } else {
+            // Evaluate Heart Rate independently
+            if (rawHr > 30.0 && rawHr < 220.0) {
+                hrEMA = (hrEMA == 0) ? rawHr : (0.75f * hrEMA + 0.25f * rawHr);
+                hr = hrEMA;
+            } else {
+                hrEMA = 0;
+            }
+
+            // Evaluate SpO2 independently
+            if (rawSpo2 > 50.0 && rawSpo2 <= 100.0) {
+                spo2EMA = (spo2EMA == 0) ? rawSpo2 : (0.75f * spo2EMA + 0.25f * rawSpo2);
+                spo2 = spo2EMA;
+            } else {
+                spo2EMA = 0;
+            }
         }
 
-        // With a local sensor we always display our OWN reading (never the MQTT
-        // telemetry echoed back on the bus, which would show another source's value).
-        updateVitals(hr, spo2);
+        if (hr > 0 || spo2 > 0) {
+            lastActivityTime = millis(); // Reset inactivity timer when finger is detected on oximeter
+            updateVitals(hr, spo2);
+        } else if (millis() - tsLastMQTTTelemetry > 5000) {
+            updateVitals(0, 0);
+        }
 
         StaticJsonDocument<384> doc;
         doc["device_id"] = device_id;
@@ -568,5 +901,5 @@ void loop() {
         tsLastReport = millis();
     }
 
-    delay(5);
+    yield();
 }
