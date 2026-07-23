@@ -13,6 +13,15 @@ def verify_hash_chain(logs):
     """
     Verifies that the hash chain of audit logs is intact.
     """
+    if not logs:
+        return True
+
+    # Verify the first log's hash independently
+    content = f"{logs[0].previous_hash}{logs[0].action}{logs[0].actor}{logs[0].target}{json.dumps(logs[0].details, sort_keys=True)}"
+    recalculated_hash = hashlib.sha256(content.encode()).hexdigest()
+    if logs[0].current_hash != recalculated_hash:
+        return False
+
     for i in range(1, len(logs)):
         if logs[i].previous_hash != logs[i-1].current_hash:
             return False

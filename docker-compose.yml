@@ -103,6 +103,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      network: host
     container_name: medisentinel-backend
     security_opt:
       - label=disable
@@ -140,6 +141,7 @@ services:
     build:
       context: ./agents
       dockerfile: Dockerfile
+      network: host
     container_name: medisentinel-agents
     security_opt:
       - label=disable
@@ -165,6 +167,7 @@ services:
     build:
       context: ./agents
       dockerfile: Dockerfile
+      network: host
     container_name: medisentinel-attacker-agent
     depends_on:
       backend:
@@ -184,6 +187,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      network: host
     container_name: medisentinel-frontend
     depends_on:
       - backend

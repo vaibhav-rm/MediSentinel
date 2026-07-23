@@ -39,7 +39,7 @@ fi
 if [ ! -f frontend/Dockerfile ]; then
     echo "[+] Creating frontend/Dockerfile..."
     printf '%s\n' \
-        'FROM node:20-alpine as build' \
+        'FROM node:20-slim as build' \
         'WORKDIR /app' \
         'COPY package*.json ./' \
         'RUN npm install' \
@@ -148,6 +148,7 @@ if [ ! -f docker-compose.yml ]; then
         '    build:' \
         '      context: ./backend' \
         '      dockerfile: Dockerfile' \
+        '      network: host' \
         '    container_name: medisentinel-backend' \
         '    depends_on:' \
         '      kafka:' \
@@ -176,6 +177,7 @@ if [ ! -f docker-compose.yml ]; then
         '    build:' \
         '      context: ./agents' \
         '      dockerfile: Dockerfile' \
+        '      network: host' \
         '    container_name: medisentinel-agents' \
         '    depends_on:' \
         '      kafka:' \
@@ -198,6 +200,7 @@ if [ ! -f docker-compose.yml ]; then
         '    build:' \
         '      context: ./agents' \
         '      dockerfile: Dockerfile' \
+        '      network: host' \
         '    container_name: medisentinel-attacker-agent' \
         '    depends_on:' \
         '      backend:' \
@@ -215,6 +218,7 @@ if [ ! -f docker-compose.yml ]; then
         '    build:' \
         '      context: ./frontend' \
         '      dockerfile: Dockerfile' \
+        '      network: host' \
         '    container_name: medisentinel-frontend' \
         '    depends_on:' \
         '      - backend' \

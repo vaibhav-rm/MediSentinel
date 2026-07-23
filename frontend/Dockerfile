@@ -1,5 +1,4 @@
-# Stage 1: Build the React application
-FROM node:20-alpine as build
+FROM node:20-slim as build
 
 WORKDIR /app
 COPY package*.json ./

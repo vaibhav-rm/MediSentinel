@@ -51,7 +51,7 @@ void handleButton2Press();
 //                     free on the host (stop any host-level mosquitto).
 const char* ssid = "Sri Krishna Pg 41";
 const char* password = "srikrishnafour";
-const char* mqtt_server = "192.168.0.130";  // laptop's LAN IP on 'Sri Krishna Pg 41' (Docker host running the MQTT broker)
+const char* mqtt_server = "192.168.0.101";  // laptop's LAN IP on 'Sri Krishna Pg 41' (Docker host running the MQTT broker)
 const int mqtt_port = 18833;
 
 const char* device_id = "esp32-hr-sim-001";
@@ -849,6 +849,10 @@ void loop() {
         float hr = 0;
         float spo2 = 0;
 
+        static unsigned long lastValidHrTime = 0;
+        static unsigned long lastValidSpo2Time = 0;
+        unsigned long currentMillis = millis();
+
         if (attackSimulationActive && !isQuarantined) {
             // Under an ACTIVE (not-yet-contained) attack the device telemetry is
             // spoofed — these are the "ruined" values. Once the agents quarantine
@@ -862,16 +866,28 @@ void loop() {
             if (rawHr > 30.0 && rawHr < 220.0) {
                 hrEMA = (hrEMA == 0) ? rawHr : (0.75f * hrEMA + 0.25f * rawHr);
                 hr = hrEMA;
+                lastValidHrTime = currentMillis;
             } else {
-                hrEMA = 0;
+                if (hrEMA > 0 && (currentMillis - lastValidHrTime < 4000)) {
+                    hr = hrEMA;
+                } else {
+                    hrEMA = 0;
+                    hr = 0;
+                }
             }
 
             // Evaluate SpO2 independently
             if (rawSpo2 > 50.0 && rawSpo2 <= 100.0) {
                 spo2EMA = (spo2EMA == 0) ? rawSpo2 : (0.75f * spo2EMA + 0.25f * rawSpo2);
                 spo2 = spo2EMA;
+                lastValidSpo2Time = currentMillis;
             } else {
-                spo2EMA = 0;
+                if (spo2EMA > 0 && (currentMillis - lastValidSpo2Time < 4000)) {
+                    spo2 = spo2EMA;
+                } else {
+                    spo2EMA = 0;
+                    spo2 = 0;
+                }
             }
         }
 

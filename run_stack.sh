@@ -3,6 +3,14 @@ set -e
 
 echo "=== MediSentinel Docker Stack Auto-Setup & Runner ==="
 
+# Export Podman socket if docker daemon is not running but podman is
+if ! docker ps &>/dev/null; then
+    if systemctl --user is-active podman.socket &>/dev/null || systemctl --user start podman.socket &>/dev/null; then
+        export DOCKER_HOST="unix:///run/user/$(id -u)/podman/podman.sock"
+        echo "[+] Using Podman socket via DOCKER_HOST=$DOCKER_HOST"
+    fi
+fi
+
 # Create directories if missing
 mkdir -p backend frontend agents
 
@@ -39,7 +47,7 @@ fi
 if [ ! -f frontend/Dockerfile ]; then
     echo "[+] Creating frontend/Dockerfile..."
     printf '%s\n' \
-        'FROM node:20-alpine as build' \
+        'FROM node:20-slim as build' \
         'WORKDIR /app' \
         'COPY package*.json ./' \
         'RUN npm install' \
@@ -148,6 +156,7 @@ if [ ! -f docker-compose.yml ]; then
         '    build:' \
         '      context: ./backend' \
         '      dockerfile: Dockerfile' \
+        '      network: host' \
         '    container_name: medisentinel-backend' \
         '    depends_on:' \
         '      kafka:' \
@@ -176,6 +185,7 @@ if [ ! -f docker-compose.yml ]; then
         '    build:' \
         '      context: ./agents' \
         '      dockerfile: Dockerfile' \
+        '      network: host' \
         '    container_name: medisentinel-agents' \
         '    depends_on:' \
         '      kafka:' \
@@ -198,6 +208,7 @@ if [ ! -f docker-compose.yml ]; then
         '    build:' \
         '      context: ./agents' \
         '      dockerfile: Dockerfile' \
+        '      network: host' \
         '    container_name: medisentinel-attacker-agent' \
         '    depends_on:' \
         '      backend:' \
@@ -215,6 +226,7 @@ if [ ! -f docker-compose.yml ]; then
         '    build:' \
         '      context: ./frontend' \
         '      dockerfile: Dockerfile' \
+        '      network: host' \
         '    container_name: medisentinel-frontend' \
         '    depends_on:' \
         '      - backend' \
@@ -258,17 +270,24 @@ echo "[+] Launching Docker Compose Stack..."
 docker compose up --build -d
 
 # Build and flash ESP32 Firmware if PlatformIO is installed
+PIO_CMD=""
 if command -v pio &> /dev/null; then
+    PIO_CMD="pio"
+elif [ -f "iot_devices/esp32_monitor/.venv_pio/bin/pio" ]; then
+    PIO_CMD="$(pwd)/iot_devices/esp32_monitor/.venv_pio/bin/pio"
+fi
+
+if [ -n "$PIO_CMD" ]; then
     echo "[+] PlatformIO detected! Compiling ESP32 firmware to ensure hardware code is up-to-date..."
-    (cd iot_devices/esp32_monitor && pio run)
+    (cd iot_devices/esp32_monitor && "$PIO_CMD" run)
     echo "[*] ESP32 firmware compiled successfully!"
     
     if [ -e /dev/ttyUSB0 ] || [ -e /dev/ttyACM0 ]; then
         echo "[+] Connected ESP32 detected! Flashing firmware automatically..."
-        (cd iot_devices/esp32_monitor && pio run -e v1_0_0 --target upload)
+        (cd iot_devices/esp32_monitor && "$PIO_CMD" run -e v1_0_0 --target upload)
     else
         echo "[*] To upload code to your physical ESP32 device, connect it and run:"
-        echo "    (cd iot_devices/esp32_monitor && pio run -e v1_0_0 --target upload)"
+        echo "    ./flash.sh"
     fi
 else
     echo "[!] PlatformIO Core not found. Skipping local ESP32 compilation."
